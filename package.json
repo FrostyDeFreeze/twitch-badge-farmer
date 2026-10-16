@@ -1,0 +1,14 @@
+{
+	"name": "twitch-badge-farmer",
+	"version": "1.0.0",
+	"type": "module",
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"format": "bunx prettier . --write",
+		"start": "node src/index.js",
+		"list": "node src/index.js --list",
+		"gen-token": "node src/index.js --gen-token"
+	}
+}

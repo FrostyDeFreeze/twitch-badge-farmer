@@ -1,0 +1,6 @@
+docs/
+test/
+
+config.json
+*.state.json
+*.state.json.*.tmp
