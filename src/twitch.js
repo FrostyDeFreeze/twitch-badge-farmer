@@ -248,6 +248,7 @@ export class Twitch {
 
 		const campaigns = data.currentUser?.inventory?.dropCampaignsInProgress
 
+		if (campaigns === null) return []
 		if (!Array.isArray(campaigns)) throw new Error('Inventory: missing Drops campaigns')
 
 		return campaigns
