@@ -3,12 +3,24 @@
 	"version": "1.0.0",
 	"type": "module",
 	"engines": {
-		"node": ">=22"
+		"bun": ">=1.4.3"
 	},
 	"scripts": {
-		"format": "bunx prettier . --write",
-		"start": "node src/index.js",
-		"list": "node src/index.js --list",
-		"gen-token": "node src/index.js --gen-token"
+		"start": "bun src/index.ts",
+		"list": "bun src/index.ts --list",
+		"gen-token": "bun src/index.ts --gen-token",
+		"typecheck": "bun --bun run tsc --noEmit",
+		"build": "bun run typecheck && bun build --compile --sourcemap src/index.ts --outfile dist/badge-farmer",
+		"format": "bun --bun run prettier . --write",
+		"format:check": "bun --bun run prettier . --check"
+	},
+	"packageManager": "bun@1.4.3",
+	"devDependencies": {
+		"@types/bun": "1.4.3",
+		"prettier": "3.9.10",
+		"typescript": "7.0.2"
+	},
+	"dependencies": {
+		"consola": "3.4.2"
 	}
 }

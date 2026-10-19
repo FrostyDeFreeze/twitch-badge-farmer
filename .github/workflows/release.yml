@@ -1,0 +1,90 @@
+name: Release
+
+on:
+    push:
+        tags: ['v*']
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    version:
+        name: Check release version
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              with:
+                  persist-credentials: false
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+              with:
+                  bun-version-file: package.json
+
+            - name: Validate version tag
+              id: validate-version
+              env:
+                  RELEASE_TAG: ${{ github.ref_name }}
+              run: |
+                  bun -e '
+                    const { version } = await Bun.file("package.json").json()
+                    const tag = process.env.RELEASE_TAG
+                    if (!/^v\d+\.\d+\.\d+$/.test(tag || "") || tag !== "v" + version) {
+                      throw new Error("Release tag must match package.json version: v" + version)
+                    }
+                    console.log("Release version verified: " + tag)
+                  '
+
+    build:
+        name: Build release
+        needs: version
+        uses: ./.github/workflows/ci.yml
+
+    publish:
+        name: Publish release
+        needs: build
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            contents: write
+        steps:
+            - name: Download builds
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+              with:
+                  pattern: badge-farmer-*
+                  path: release
+                  merge-multiple: true
+
+            - name: Generate checksums
+              id: checksums
+              working-directory: release
+              run: |
+                  sha256sum \
+                    badge-farmer-windows-x64.zip \
+                    badge-farmer-linux-x64.tar.gz \
+                    badge-farmer-macos-arm64.tar.gz \
+                    badge-farmer-macos-x64.tar.gz > SHA256SUMS
+
+            - name: Publish verified files
+              id: publish-release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+                  RELEASE_TAG: ${{ github.ref_name }}
+              run: |
+                  if draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+                    if [ "$draft" != true ]; then
+                      echo "Release $RELEASE_TAG is already published"
+                      exit 1
+                    fi
+                  else
+                    gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG" --generate-notes
+                  fi
+                  gh release upload "$RELEASE_TAG" release/* --clobber
+                  gh release edit "$RELEASE_TAG" --draft=false --latest

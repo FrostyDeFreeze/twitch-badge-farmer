@@ -1,15 +1,44 @@
-import { fetchResponse, fetchJson, fetchText } from './fetch.js'
-import { matchesDrop } from './catalog.js'
+import type { Campaign, Config, DropProgress, DropReference, GlobalBadge, SelectedStream, Stream, Task } from './types.ts'
 
-const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0'
-const QUERIES = {
+interface GqlData {
+	GlobalBadges: { badges?: GlobalBadge[] }
+	ViewerCard: { channelViewer?: { earnedBadges?: { setID: string; version: string | number }[] } | null }
+	Inventory: { currentUser?: { inventory?: { dropCampaignsInProgress?: Campaign[] | null } } | null }
+	DropsHighlightService_AvailableDrops: { channel?: { viewerDropCampaigns?: Campaign[] | null } | null }
+	PlaybackAccessToken: { streamPlaybackAccessToken?: { signature?: string; value?: string } | null }
+	DropsPage_ClaimDropRewards: { claimDropRewards?: { status?: string } | null }
+}
+
+interface GqlResponse<T> {
+	data?: T
+	errors?: { message?: string; extensions?: { code?: string } }[]
+}
+
+interface GqlBody {
+	operationName: keyof GqlData
+	variables: Record<string, unknown>
+	query?: string
+	extensions?: { persistedQuery: { version: number; sha256Hash: string | undefined } }
+}
+
+interface StreamOptions {
+	exclude?: Set<string>
+	drop?: DropReference | null | undefined
+}
+
+import { fetchResponse, fetchJson, fetchText } from './fetch.ts'
+import { matchesDrop } from './catalog.ts'
+
+const USER_AGENT =
+	'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/144.1 Mobile/15E148 Safari/604.1'
+const QUERIES: Partial<Record<keyof GqlData, string>> = {
 	PlaybackAccessToken: 'ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9',
 	Inventory: '3ab317a5753b25125f47d4ce962ebe928ff4e85047b77508340c94ebc20b6230',
 	DropsHighlightService_AvailableDrops: '782dad0f032942260171d2d80a654f88bdd0c5a9dddc392e9bc92218a0f42d20',
 	DropsPage_ClaimDropRewards: 'a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930'
 }
 
-function cdnUrl(value, base) {
+function cdnUrl(value: string, base: string | URL) {
 	const url = new URL(value, base)
 	const domains = ['ttvnw.net', 'twitchcdn.net', 'cloudfront.net']
 
@@ -26,7 +55,7 @@ function cdnUrl(value, base) {
 	return url.href
 }
 
-function playlistLines(text) {
+function playlistLines(text: string) {
 	const lines = text
 		.trim()
 		.split(/\r?\n/)
@@ -38,15 +67,15 @@ function playlistLines(text) {
 	return lines
 }
 
-export function chooseVariant(text, base) {
+export function chooseVariant(text: string, base: string | URL) {
 	const lines = playlistLines(text)
 	const variants = []
 
 	for (let index = 0; index < lines.length; index++) {
-		if (!lines[index].startsWith('#EXT-X-STREAM-INF:')) continue
+		if (!lines[index]!.startsWith('#EXT-X-STREAM-INF:')) continue
 
 		const info = Object.fromEntries(
-			[...lines[index].matchAll(/([A-Z0-9-]+)=("[^"]*"|[^,]*)/g)].map(match => [match[1], match[2].replace(/^"|"$/g, '')])
+			[...lines[index]!.matchAll(/([A-Z0-9-]+)=("[^"]*"|[^,]*)/g)].map(match => [match[1]!, match[2]!.replace(/^"|"$/g, '')])
 		)
 		const video = info.RESOLUTION || /avc|hvc|hev|av01|vp0?9/i.test(info.CODECS || '')
 		const bandwidth = Number(info['AVERAGE-BANDWIDTH'] || info.BANDWIDTH)
@@ -61,10 +90,10 @@ export function chooseVariant(text, base) {
 
 	if (!variants.length) throw new Error('Twitch: no video variant available')
 
-	return variants[0].url
+	return variants[0]!.url
 }
 
-export function playlistSegments(text, base) {
+export function playlistSegments(text: string, base: string | URL) {
 	const lines = playlistLines(text)
 
 	if (lines.includes('#EXT-X-ENDLIST')) throw new Error('Twitch: stream ended')
@@ -72,8 +101,8 @@ export function playlistSegments(text, base) {
 	const segments = []
 
 	for (let index = 0; index < lines.length; index++) {
-		if (lines[index].startsWith('#EXTINF:') && lines[index + 1] && !lines[index + 1].startsWith('#')) {
-			segments.push(cdnUrl(lines[index + 1], base))
+		if (lines[index]!.startsWith('#EXTINF:') && lines[index + 1] && !lines[index + 1]!.startsWith('#')) {
+			segments.push(cdnUrl(lines[index + 1]!, base))
 		}
 	}
 
@@ -83,7 +112,11 @@ export function playlistSegments(text, base) {
 }
 
 export class Twitch {
-	constructor(config, signal) {
+	config: Config
+	signal: AbortSignal | undefined
+	playback: { id: string; url: string } | null
+
+	constructor(config: Config, signal?: AbortSignal) {
 		this.config = config
 		this.signal = signal
 		this.playback = null
@@ -93,9 +126,9 @@ export class Twitch {
 		return { Authorization: prefix + ' ' + this.config.token, 'Client-Id': this.config.client_id, 'User-Agent': USER_AGENT }
 	}
 
-	async gql(operationName, variables, query) {
-		const body = { operationName, variables }
-		const headers = { 'Client-Id': this.config.client_id, 'User-Agent': USER_AGENT, 'Content-Type': 'application/json' }
+	async gql<K extends keyof GqlData>(operationName: K, variables: Record<string, unknown>, query?: string): Promise<GqlData[K]> {
+		const body: GqlBody = { operationName, variables }
+		const headers: Record<string, string> = { 'Client-Id': this.config.client_id, 'User-Agent': USER_AGENT, 'Content-Type': 'application/json' }
 
 		if (!['GlobalBadges', 'ViewerCard', 'DropsHighlightService_AvailableDrops'].includes(operationName)) {
 			headers.Authorization = 'OAuth ' + this.config.token
@@ -104,7 +137,7 @@ export class Twitch {
 		if (query) body.query = query
 		else body.extensions = { persistedQuery: { version: 1, sha256Hash: QUERIES[operationName] } }
 
-		const result = await fetchJson('https://gql.twitch.tv/gql', {
+		const result = await fetchJson<GqlResponse<GqlData[K]>>('https://gql.twitch.tv/gql', {
 			method: 'POST',
 			fatalAuth: true,
 			signal: this.signal,
@@ -129,11 +162,11 @@ export class Twitch {
 						: /Cannot query field|Unknown argument/i.test(messages)
 							? 'query schema changed'
 							: 'request rejected'
-			const code = result.errors.find(error => /^[A-Z][A-Z0-9_]{1,63}$/.test(error.extensions?.code))?.extensions.code
+			const code = result.errors.find(error => /^[A-Z][A-Z0-9_]{1,63}$/.test(error.extensions?.code || ''))?.extensions?.code
 			const error = new Error('GQL ' + operationName + ': ' + reason + (code ? ' (' + code + ')' : ''))
 
 			error.fatal = authRejected || /integrity|PersistedQueryNotFound/i.test(messages)
-			if (authRejected) error.message += ', run npm run gen-token'
+			if (authRejected) error.message += ', run with --gen-token'
 
 			throw error
 		}
@@ -176,10 +209,10 @@ export class Twitch {
 		return new Set(badges.map(badge => badge.setID + ':' + badge.version))
 	}
 
-	async streams(task) {
-		const batches = values =>
+	async streams(task: Task) {
+		const batches = (values: string[]) =>
 			values.length ? Array.from({ length: Math.ceil(values.length / 100) }, (_, index) => values.slice(index * 100, index * 100 + 100)) : [[]]
-		const result = new Map()
+		const result = new Map<string, Stream>()
 
 		for (const channels of batches(task.channels.map(channel => channel.id))) {
 			for (const categories of batches(task.categoryIds)) {
@@ -191,7 +224,12 @@ export class Twitch {
 				for (const id of channels) url.searchParams.append('user_id', id)
 				for (const id of categories) url.searchParams.append('game_id', id)
 
-				const data = await fetchJson(url, { headers: this.headers(), fatalAuth: true, signal: this.signal, label: 'Helix streams' })
+				const data = await fetchJson<{ data?: Stream[] }>(url, {
+					headers: this.headers(),
+					fatalAuth: true,
+					signal: this.signal,
+					label: 'Helix streams'
+				})
 
 				if (!Array.isArray(data.data)) throw new Error('Helix: unsupported stream list format')
 
@@ -208,7 +246,7 @@ export class Twitch {
 		return [...result.values()].sort((left, right) => (right.viewer_count || 0) - (left.viewer_count || 0))
 	}
 
-	async selectStream(task, { exclude = new Set(), drop: expectedDrop } = {}) {
+	async selectStream(task: Task, { exclude = new Set(), drop: expectedDrop }: StreamOptions = {}): Promise<SelectedStream | null> {
 		const streams = await this.streams(task)
 
 		for (const stream of streams) {
@@ -241,7 +279,7 @@ export class Twitch {
 		const data = await this.gql('Inventory', { fetchRewardCampaigns: true })
 
 		if (data.currentUser === null) {
-			const error = new Error('Inventory: authorization rejected, run npm run gen-token')
+			const error = new Error('Inventory: authorization rejected, run with --gen-token')
 			error.fatal = true
 			throw error
 		}
@@ -254,7 +292,7 @@ export class Twitch {
 		return campaigns
 	}
 
-	async dropProgress(drop, campaigns) {
+	async dropProgress(drop: DropReference, campaigns?: Campaign[]): Promise<DropProgress | null> {
 		campaigns ??= await this.inventory()
 
 		const campaign = campaigns.find(campaign => campaign.id === drop.campaignId)
@@ -269,15 +307,15 @@ export class Twitch {
 		return { ...item.self, requiredMinutesWatched: item.requiredMinutesWatched }
 	}
 
-	async claimDrop(dropInstanceID) {
+	async claimDrop(dropInstanceID: string) {
 		const data = await this.gql('DropsPage_ClaimDropRewards', { input: { dropInstanceID } })
 
-		if (!['ELIGIBLE_FOR_ALL', 'DROP_INSTANCE_ALREADY_CLAIMED'].includes(data.claimDropRewards?.status)) {
+		if (!['ELIGIBLE_FOR_ALL', 'DROP_INSTANCE_ALREADY_CLAIMED'].includes(data.claimDropRewards?.status || '')) {
 			throw new Error('Twitch: Drop claim not accepted')
 		}
 	}
 
-	async watch(stream) {
+	async watch(stream: SelectedStream) {
 		const headers = { 'User-Agent': USER_AGENT }
 
 		try {
@@ -315,7 +353,7 @@ export class Twitch {
 			const media = await fetchText(this.playback.url, { headers, signal: this.signal, label: 'HLS media playlist' })
 			const segments = playlistSegments(media, this.playback.url)
 
-			// Reuse the playback session and touch the playlist's full segment window
+			// reuse the playback session and touch the full segment window
 			for (const [index, segment] of segments.entries()) {
 				const response = await fetchResponse(segment, {
 					method: 'HEAD',
@@ -327,6 +365,8 @@ export class Twitch {
 				if (![200, 206].includes(response.status)) throw new Error('Twitch: segment unavailable')
 			}
 		} catch (error) {
+			if (!(error instanceof Error)) throw error
+
 			this.playback = null
 
 			throw error
