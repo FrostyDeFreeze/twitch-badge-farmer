@@ -1,5 +1,9 @@
+.codegraph/
+
+dist/
 docs/
 test/
+node_modules/
 
 config.json
 *.state.json

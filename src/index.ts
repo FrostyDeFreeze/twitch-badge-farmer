@@ -1,22 +1,30 @@
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { setTimeout as pause } from 'node:timers/promises'
-import { readConfig, validateConfig } from './config.js'
-import { generateToken } from './gen-token.js'
-import { buildTasks, describeSkipped } from './catalog.js'
-import { fetchJson } from './fetch.js'
-import { Twitch } from './twitch.js'
-import { Collector } from './collector.js'
-import { loadState, saveState } from './state.js'
+import { readConfig, validateConfig } from './config.ts'
+import { generateToken } from './gen-token.ts'
+import { buildTasks, describeSkipped } from './catalog.ts'
+import { fetchJson } from './fetch.ts'
+import { Twitch } from './twitch.ts'
+import { Collector } from './collector.ts'
+import { loadState, saveState } from './state.ts'
+import { createLogger } from './logger.ts'
 
-function argumentsFor(args) {
+let log = createLogger()
+
+function argumentsFor(args: string[]) {
 	let mode = 'start'
+	let debug = false
 	let configPath = resolve('config.json')
 
 	for (let index = 0; index < args.length; index++) {
-		const argument = args[index]
+		const argument = args[index]!
+		const value = args[index + 1]
 
-		if (argument === '--config' && args[index + 1] && !args[index + 1].startsWith('--')) {
-			configPath = resolve(args[++index])
+		if (argument === '--config' && value && !value.startsWith('--')) {
+			configPath = resolve(value)
+			index++
+		} else if (argument === '--debug') {
+			debug = true
 		} else if (['--help', '--list', '--gen-token'].includes(argument) && mode === 'start') {
 			mode = argument.slice(2)
 		} else {
@@ -24,21 +32,23 @@ function argumentsFor(args) {
 		}
 	}
 
-	return { mode, configPath }
+	return { mode, configPath, debug }
 }
 
 async function main() {
-	const { mode, configPath } = argumentsFor(process.argv.slice(2))
+	const { mode, configPath, debug } = argumentsFor(process.argv.slice(2))
+
+	log = createLogger({ debug })
 
 	if (mode === 'help') {
 		console.log(
 			[
 				'Badge Farmer',
-				'node src/index.js [--config config.json] [mode]',
+				`${Bun.isStandaloneExecutable ? basename(process.execPath) : 'bun src/index.ts'} [--config config.json] [--debug] [mode]`,
 				'--list   List eligible badges without viewing',
 				'--gen-token   Generate a token and save config.json',
-				'No mode: keep running, Ctrl+C to stop',
-				'JSON config: id, login, client_id, token'
+				'--debug   Show technical diagnostics and skipped badges',
+				'No mode: keep running, Ctrl+C to stop'
 			].join('\n')
 		)
 
@@ -54,7 +64,7 @@ async function main() {
 		process.once('SIGTERM', stop)
 
 		try {
-			await generateToken(configPath, controller.signal)
+			await generateToken(configPath, controller.signal, log)
 		} finally {
 			process.off('SIGINT', stop)
 			process.off('SIGTERM', stop)
@@ -65,14 +75,7 @@ async function main() {
 
 	const config = validateConfig(await readConfig(configPath))
 
-	const log = message => {
-		const safe = String(message)
-			.replaceAll(config.token, '[redacted]')
-			.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
-			.replace(/\.+$/, '')
-
-		console.log(new Date().toISOString() + ' ' + safe)
-	}
+	log = createLogger({ debug, token: config.token })
 
 	if (mode === 'list') {
 		const twitch = new Twitch(config, controller.signal)
@@ -93,10 +96,11 @@ async function main() {
 			}))
 		)
 
-		log(`[CATALOG] Tasks: ${tasks.length}, skipped records: ${skipped.length}`)
+		log.info(`Found ${tasks.length} available badge${tasks.length === 1 ? '' : 's'}`)
+		log.debug(`[CATALOG] Skipped records: ${skipped.length}`)
 
 		for (const message of describeSkipped(skipped)) {
-			log(message)
+			log.debug(message)
 		}
 
 		return
@@ -114,7 +118,7 @@ async function main() {
 	})
 
 	const stop = () => controller.abort(new Error('Shutdown requested'))
-	const onMessage = message => {
+	const onMessage = (message: unknown) => {
 		if (message === 'shutdown') stop()
 	}
 
@@ -125,7 +129,8 @@ async function main() {
 	let failures = 0
 
 	try {
-		log('[SYSTEM] Starting: ' + config.login + ', one active viewing session')
+		log.info('Account: ' + config.login)
+		log.debug('[SYSTEM] Starting one active viewing session')
 
 		while (!controller.signal.aborted) {
 			let delay
@@ -134,6 +139,8 @@ async function main() {
 				delay = await collector.step()
 				failures = 0
 			} catch (error) {
+				if (!(error instanceof Error)) throw error
+
 				if (controller.signal.aborted) break
 				if (error.fatal) throw error
 
@@ -142,12 +149,15 @@ async function main() {
 
 				delay = Math.max(Math.min(10_000 * 2 ** Math.min(failures - 1, 5), 300_000), error.retryAfterMs || 0)
 
-				log(`[ERROR] [SYSTEM] ${error.message}, retrying in ${Math.ceil(delay / 1000)}s`)
+				log.warn(`Could not update badge collection | Retrying in ${Math.ceil(delay / 1000)}s`)
+				log.debug('[SYSTEM] ' + error.message)
 			}
 
 			try {
 				await pause(Math.max(1, delay), undefined, { signal: controller.signal })
 			} catch (error) {
+				if (!(error instanceof Error)) throw error
+
 				if (!controller.signal.aborted) throw error
 			}
 		}
@@ -156,12 +166,12 @@ async function main() {
 
 		await collector.persist()
 
-		log('[SYSTEM] Stopped, state saved')
+		log.info('Stopped | State saved')
 	}
 }
 
 main().catch(error => {
-	console.error('[ERROR] [SYSTEM] Error: ' + error.message.replace(/\.+$/, ''))
+	log.error(error instanceof Error ? error.message : 'Unexpected failure')
 
 	process.exitCode = 1
 })

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+    workflow_call:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: Build ${{ matrix.platform }}
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 15
+        defaults:
+            run:
+                shell: bash
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: windows-2022
+                      platform: windows-x64
+                      binary: badge-farmer.exe
+                    - os: ubuntu-24.04
+                      platform: linux-x64
+                      binary: badge-farmer
+                    - os: macos-15
+                      platform: macos-arm64
+                      binary: badge-farmer
+                    - os: macos-15-intel
+                      platform: macos-x64
+                      binary: badge-farmer
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              with:
+                  persist-credentials: false
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+              with:
+                  bun-version-file: package.json
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Check formatting
+              if: runner.os == 'Linux'
+              run: bun run format:check
+
+            - name: Check types and build
+              run: bun run build
+
+            - name: Check executable
+              run: ./dist/${{ matrix.binary }} --help
+
+            - name: Package Windows executable
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: Compress-Archive -LiteralPath dist/badge-farmer.exe -DestinationPath dist/badge-farmer-windows-x64.zip
+
+            - name: Package Unix executable
+              if: runner.os != 'Windows'
+              run: tar -czf dist/badge-farmer-${{ matrix.platform }}.tar.gz -C dist badge-farmer
+
+            - name: Upload build
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+              with:
+                  name: badge-farmer-${{ matrix.platform }}
+                  path: |
+                      dist/*.zip
+                      dist/*.tar.gz
+                  if-no-files-found: error
+                  compression-level: 0
+                  retention-days: 7

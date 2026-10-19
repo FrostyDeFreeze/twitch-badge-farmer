@@ -1,4 +1,47 @@
-function badgeKey(setId, version) {
+import type { Campaign, Drop, GlobalBadge, Task } from './types.ts'
+
+interface Dates {
+	start_at_date?: string
+	start_at_time?: string
+	end_at_date?: string
+	end_at_time?: string
+}
+
+interface Objective {
+	type: string
+	minutes?: number
+	days?: number | null
+	twitch_global_chat_badges?: { set_id?: string; version?: { id?: string | number } }[]
+}
+
+interface Availability extends Dates {
+	_id?: string | number
+	scope?: string
+	cost?: string
+	hidden?: boolean
+	revocable?: boolean
+	chance_denominator?: number | null
+	channel_count?: number | null
+	categories?: { game: { id: string; name?: string } }[] | null
+	channels?: { user: { id: string; login: string } }[] | null
+	objectives?: Objective[][] | null
+}
+
+interface CatalogEvent extends Dates {
+	hidden?: boolean
+	twitch_global_badges: {
+		current: { set_id?: string; version: { id?: string | number; title?: string; image_url_4x?: string } }
+		availability?: Availability[]
+	}[]
+}
+
+interface SkippedBadge {
+	key: string
+	title: string
+	reason: string
+}
+
+function badgeKey(setId: string | undefined, version: string | number | null | undefined) {
 	if (!setId || version == null) {
 		throw new Error('Missing badge identifier')
 	}
@@ -6,10 +49,10 @@ function badgeKey(setId, version) {
 	return `${setId}:${version}`
 }
 
-function dateAt(availability, event, prefix, end) {
-	const ownDate = availability[prefix + '_at_date']
-	const date = ownDate || event[prefix + '_at_date']
-	const time = availability[prefix + '_at_time'] || (!ownDate ? event[prefix + '_at_time'] : '') || (end ? '23:59:59.999' : '00:00')
+function dateAt(availability: Dates, event: Dates, prefix: 'start' | 'end', end: boolean) {
+	const ownDate = availability[`${prefix}_at_date`]
+	const date = ownDate || event[`${prefix}_at_date`]
+	const time = availability[`${prefix}_at_time`] || (!ownDate ? event[`${prefix}_at_time`] : '') || (end ? '23:59:59.999' : '00:00')
 
 	if (!date) throw new Error('Missing availability dates')
 
@@ -22,10 +65,10 @@ function dateAt(availability, event, prefix, end) {
 	return timestamp
 }
 
-function watchMinutes(objectives, owned) {
+function watchMinutes(objectives: Objective[][] | null | undefined, owned: Set<string>) {
 	if (!Array.isArray(objectives) || !objectives.length) throw new Error('Missing structured objectives')
 
-	const watches = []
+	const watches: number[] = []
 
 	for (const group of objectives) {
 		if (!Array.isArray(group) || !group.length) throw new Error('Unknown objectives')
@@ -39,8 +82,9 @@ function watchMinutes(objectives, owned) {
 		if (unlocked) continue
 
 		const options = group.filter(
-			objective =>
+			(objective): objective is Objective & { minutes: number } =>
 				objective.type === 'twitch_watch' &&
+				typeof objective.minutes === 'number' &&
 				Number.isSafeInteger(objective.minutes) &&
 				objective.minutes > 0 &&
 				(objective.days == null || objective.days === 1)
@@ -53,10 +97,10 @@ function watchMinutes(objectives, owned) {
 
 	if (watches.length !== 1) throw new Error('Ambiguous viewing objectives')
 
-	return watches[0]
+	return watches[0]!
 }
 
-function restrictions(availability) {
+function restrictions(availability: Availability) {
 	const { categories, channels, channel_count: channelCount } = availability
 
 	if (categories === undefined || channels === undefined) throw new Error('Missing eligibility restrictions')
@@ -81,7 +125,7 @@ function restrictions(availability) {
 	}
 }
 
-export function matchesDrop(task, campaign, drop, now = Date.now()) {
+export function matchesDrop(task: Task, campaign: Campaign, drop: Drop, now = Date.now()) {
 	const names = [task.title, task.rewardTitle].filter(Boolean).map(name => name.trim().toLowerCase())
 
 	return (
@@ -98,13 +142,20 @@ export function matchesDrop(task, campaign, drop, now = Date.now()) {
 	)
 }
 
-export function buildTasks(data, owned = new Set(), now = Date.now(), globals = new Map(), campaigns = []) {
-	if (!Array.isArray(data?.data)) throw new Error('StreamDatabase: unsupported response format')
+export function buildTasks(
+	data: unknown,
+	owned = new Set<string>(),
+	now = Date.now(),
+	globals = new Map<string, GlobalBadge>(),
+	campaigns: Campaign[] = []
+) {
+	if (!data || typeof data !== 'object' || !('data' in data) || !Array.isArray(data.data))
+		throw new Error('StreamDatabase: unsupported response format')
 
-	const tasks = new Map()
-	const skipped = []
+	const tasks = new Map<string, Task>()
+	const skipped: SkippedBadge[] = []
 
-	for (const event of data.data) {
+	for (const event of data.data as CatalogEvent[]) {
 		if (!Array.isArray(event.twitch_global_badges)) throw new Error('StreamDatabase: missing badge list')
 
 		for (const badge of event.twitch_global_badges) {
@@ -138,7 +189,7 @@ export function buildTasks(data, owned = new Set(), now = Date.now(), globals = 
 					if (now < startAt) throw new Error('Event has not started')
 
 					const minutes = watchMinutes(availability.objectives, owned)
-					const task = {
+					const task: Task = {
 						key,
 						title,
 						rewardTitle,
@@ -156,6 +207,8 @@ export function buildTasks(data, owned = new Set(), now = Date.now(), globals = 
 						tasks.set(key, task)
 					}
 				} catch (error) {
+					if (!(error instanceof Error)) throw error
+
 					skipped.push({ key, title, reason: error.message })
 				}
 			}
@@ -170,13 +223,13 @@ export function buildTasks(data, owned = new Set(), now = Date.now(), globals = 
 						matchesDrop(task, campaign, drop, now) &&
 						!drop.self?.isClaimed &&
 						Number.isFinite(drop.self?.currentMinutesWatched) &&
-						drop.self.currentMinutesWatched > 0
+						drop.self!.currentMinutesWatched > 0
 				)
-				.map(drop => ({ campaignId: campaign.id, id: drop.id, minutes: drop.self.currentMinutesWatched }))
+				.map(drop => ({ campaignId: campaign.id, id: drop.id, minutes: drop.self!.currentMinutesWatched }))
 		)
 
 		if (matches.length === 1) {
-			const { campaignId, id, minutes } = matches[0]
+			const { campaignId, id, minutes } = matches[0]!
 
 			task.drop = { campaignId, id }
 			task.serverMinutes = minutes
@@ -186,7 +239,7 @@ export function buildTasks(data, owned = new Set(), now = Date.now(), globals = 
 	return {
 		tasks: [...tasks.values()].sort(
 			(a, b) =>
-				Boolean(b.serverMinutes) - Boolean(a.serverMinutes) ||
+				Number(Boolean(b.serverMinutes)) - Number(Boolean(a.serverMinutes)) ||
 				Math.max(0, a.minutes - (a.serverMinutes || 0)) - Math.max(0, b.minutes - (b.serverMinutes || 0)) ||
 				a.endAt - b.endAt ||
 				a.key.localeCompare(b.key)
@@ -195,13 +248,13 @@ export function buildTasks(data, owned = new Set(), now = Date.now(), globals = 
 	}
 }
 
-export function describeSkipped(skipped) {
-	const badges = new Map()
+export function describeSkipped(skipped: SkippedBadge[]) {
+	const badges = new Map<string, { title: string; reasons: Set<string> }>()
 
 	for (const { key, title, reason } of skipped) {
 		if (!badges.has(key)) badges.set(key, { title, reasons: new Set() })
 
-		badges.get(key).reasons.add(reason)
+		badges.get(key)!.reasons.add(reason)
 	}
 
 	return [...badges].map(([key, badge]) => `[CATALOG] Skipped: ${key} | ${[...badge.reasons].join('; ')}`)

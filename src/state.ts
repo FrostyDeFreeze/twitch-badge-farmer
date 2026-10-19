@@ -1,12 +1,15 @@
+import type { CollectorState } from './types.ts'
 import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 
-export async function loadState(path, id) {
+export async function loadState(path: string, id: string): Promise<CollectorState> {
 	let text
 
 	try {
 		text = await readFile(path, 'utf8')
 	} catch (error) {
+		if (!(error instanceof Error)) throw error
+
 		if (error.code === 'ENOENT') {
 			return { version: 1, id, confirmed: [], attempts: {}, active: null }
 		}
@@ -14,7 +17,7 @@ export async function loadState(path, id) {
 		throw new Error('Could not read state: ' + error.code)
 	}
 
-	let state
+	let state: unknown
 
 	try {
 		state = JSON.parse(text.replace(/^\uFEFF/, ''))
@@ -22,14 +25,26 @@ export async function loadState(path, id) {
 		throw new Error('Invalid state JSON, original file preserved')
 	}
 
-	if (state?.version !== 1 || state.id !== id || !Array.isArray(state.confirmed) || !state.attempts || typeof state.attempts !== 'object') {
+	if (
+		!state ||
+		typeof state !== 'object' ||
+		!('version' in state) ||
+		state.version !== 1 ||
+		!('id' in state) ||
+		state.id !== id ||
+		!('confirmed' in state) ||
+		!Array.isArray(state.confirmed) ||
+		!('attempts' in state) ||
+		!state.attempts ||
+		typeof state.attempts !== 'object'
+	) {
 		throw new Error('State belongs to another account or has an unsupported format')
 	}
 
-	return state
+	return state as CollectorState
 }
 
-export async function saveState(path, state) {
+export async function saveState(path: string, state: CollectorState) {
 	const temp = path + '.' + randomUUID() + '.tmp'
 
 	try {
