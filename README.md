@@ -1,14 +1,16 @@
 # Badge Farmer
 
-Collects free global Twitch badges by watching eligible streams
+Collects global Twitch badges that are awarded for watching streams.
 
 [Русская версия](README.ru.md)
 
+The program uses Twitch's internal API and the TV app client. Twitch does not officially support this, so use it at your own risk.
+
 ## Installation
 
-Download a ready-to-run version from [Releases](https://github.com/FrostyDeFreeze/twitch-badge-farmer/releases)
+Download a ready-to-run version from [Releases](https://github.com/FrostyDeFreeze/twitch-badge-farmer/releases).
 
-Open the latest release and download the archive for your system from **Assets**
+Open the latest release and download the archive for your system from **Assets**.
 
 | System                   | Download                        |
 | ------------------------ | ------------------------------- |
@@ -17,111 +19,111 @@ Open the latest release and download the archive for your system from **Assets**
 | macOS with Apple Silicon | badge-farmer-macos-arm64.tar.gz |
 | macOS with an Intel chip | badge-farmer-macos-x64.tar.gz   |
 
-Extract the archive into a folder where you want to keep the program and its settings
+Extract the archive into a folder where you want to keep the program and its settings.
 
-The executable is named `badge-farmer.exe` on Windows and `badge-farmer` on Linux and macOS
+The executable is named `badge-farmer.exe` on Windows and `badge-farmer` on Linux and macOS.
 
-If no release is available yet, follow [Manual installation](#manual-installation)
+If no release is available yet, follow [Manual installation](#manual-installation).
 
 ### Set up your Twitch account
 
-Open a terminal in the extracted folder
+Open a terminal in the extracted folder.
 
-On Windows, open the folder in File Explorer, type `powershell` in the address bar and press **Enter**
+On Windows, open the folder in File Explorer, type `powershell` in the address bar and press **Enter**.
 
-Run this command on Windows
+Run this command on Windows:
 
 ```powershell
 .\badge-farmer.exe --gen-token
 ```
 
-On Linux or macOS, run
+On Linux or macOS, run:
 
 ```sh
 ./badge-farmer --gen-token
 ```
 
-1. Sign in to the Twitch account you want to use in the browser window that opens
-2. Complete the authorization on Twitch; if prompted, enter the activation code shown in the terminal
-3. Return to the terminal and wait for the `Config saved` message
+1. Sign in to the Twitch account you want to use in the browser window that opens.
+2. Complete the authorization on Twitch. If prompted, enter the activation code shown in the terminal.
+3. Return to the terminal and wait for the `Config saved` message.
 
-If the browser does not open, use the activation link printed in the terminal
+If the browser does not open, use the activation link printed in the terminal.
 
-The program creates `config.json` with your account details and token, so you do not need to fill in any fields yourself
+The program creates `config.json` with your account details and token, so you do not need to fill in any fields yourself.
 
-Keep `config.json` private, since it contains your access token
+Keep `config.json` private, since it contains your access token.
 
 ### About the TV token
 
-Badge Farmer uses a **Twitch TV-app OAuth token** obtained through device authorization
+Badge Farmer uses a **Twitch TV-app OAuth token** obtained through device authorization.
 
-The `--gen-token` command generates this type of token automatically
+The `--gen-token` command generates this type of token automatically.
 
-For manual generation, follow this [device authorization example](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2/issues/94#issuecomment-1360683876)
+For manual generation, follow this [device authorization example](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2/issues/94#issuecomment-1360683876).
 
-Use the TV Client ID from `config.example.json` in the source files and leave the `scopes` parameter empty to match `--gen-token`
+Use the TV Client ID from `config.example.json` in the source files and leave the `scopes` parameter empty to match `--gen-token`.
 
 ### Updating
 
-Stop the program before replacing it with a newer version
+Stop the program before replacing it with a newer version.
 
-Keep your existing `config.json` in the same folder as the new executable, or copy it there if you extract the update into a new folder
+Keep your existing `config.json` in the same folder as the new executable, or copy it there if you extract the update into a new folder.
 
-You can reuse this file after an update without generating a new token, as long as the token is still valid
+You can reuse this file after an update without generating a new token, as long as the token is still valid.
 
-Also keep `config.json.state.json`, which stores the program's saved collection state
+Also keep `config.json.state.json`, which stores the program's saved collection state.
 
-If Twitch later rejects your authorization, run `--gen-token` again and sign in with the same account
+If Twitch later rejects your authorization, run `--gen-token` again and sign in with the same account.
 
 ## Manual installation
 
-Use this method if you want to run the program from its source files
+Use this method if you want to run the program from its source files.
 
-1. Install [Bun](https://bun.sh/docs/installation) 1.4.3 or newer
-2. Open the [repository](https://github.com/FrostyDeFreeze/twitch-badge-farmer), choose **Code → Download ZIP** and extract it
-3. Open a terminal in the extracted project folder and install the dependencies
+1. Install [Bun](https://bun.sh/docs/installation) 1.4.3 or newer.
+2. Open the [repository](https://github.com/FrostyDeFreeze/twitch-badge-farmer), choose **Code → Download ZIP** and extract it.
+3. Open a terminal in the extracted project folder and install the dependencies:
 
 ```sh
 bun install --frozen-lockfile
 ```
 
-If you already have `config.json`, copy it into the project folder
+If you already have `config.json`, copy it into the project folder.
 
-Otherwise, create it by following the Twitch authorization steps above with this command
+Otherwise, create it by running this command and following the Twitch authorization steps above.
 
 ```sh
 bun run gen-token
 ```
 
-Start the program with `bun run start`, or list available badges with `bun run list`
+Start the program with `bun run start`, or list available badges with `bun run list`.
 
-To use the CLI options below, add them to the start command, for example `bun run start --debug` or `bun run start --config account.json`
+To use the CLI options below, add them to the start command, for example `bun run start --debug` or `bun run start --config account.json`.
 
 ## Usage
 
-Run commands from the folder containing the program and your `config.json`
+Run commands from the folder containing the program and your `config.json`.
 
-The program uses the terminal; keep it open while collecting badges
+The program runs in the terminal, so keep it open while collecting badges.
 
-Start collecting on Windows
+Start collecting on Windows:
 
 ```powershell
 .\badge-farmer.exe
 ```
 
-On Linux or macOS
+On Linux or macOS:
 
 ```sh
 ./badge-farmer
 ```
 
-To see available badges without starting a viewing session, add `--list`
+To see available badges without starting a viewing session, add `--list`:
 
 ```powershell
 .\badge-farmer.exe --list
 ```
 
-On Linux or macOS, use `./badge-farmer` in place of `.\badge-farmer.exe` in the examples
+On Linux or macOS, use `./badge-farmer` in place of `.\badge-farmer.exe` in the examples.
 
 | Option                  | What it does                                               |
 | ----------------------- | ---------------------------------------------------------- |
@@ -132,39 +134,56 @@ On Linux or macOS, use `./badge-farmer` in place of `.\badge-farmer.exe` in the 
 | `--debug`               | Show technical details and reasons why badges were skipped |
 | `--config account.json` | Use a different configuration file                         |
 
-You can combine `--debug` and `--config` with a mode, for example
+You can combine `--debug` and `--config` with a mode, for example:
 
 ```powershell
 .\badge-farmer.exe --list --debug --config account.json
 ```
 
-To set up a separate configuration file, run `.\badge-farmer.exe --gen-token --config account.json`
+To set up a separate configuration file, run `.\badge-farmer.exe --gen-token --config account.json`.
 
-Press **Ctrl+C** to stop
+Press **Ctrl+C** to stop.
 
-The program saves its state in `config.json.state.json` and uses it on the next launch
+The program saves its state in `config.json.state.json` and uses it on the next launch.
 
-With `--config account.json`, the state file is named `account.json.state.json`
+With `--config account.json`, the state file is named `account.json.state.json`.
 
-If there are no badges to collect, the program keeps checking for new ones
+If there are no badges to collect, the program keeps checking for new ones.
 
-Run only one instance per Twitch account and avoid watching other streams on that account while collecting, as this can interfere with Drops progress
+Run only one instance per Twitch account and avoid watching other streams on that account while collecting, otherwise Twitch may count progress incorrectly.
 
-## How It Works
+## How it works
 
-1. Checks [StreamDatabase](https://streamdatabase.com) for available free badges earned through viewing and skips badges you already own
-2. Picks a badge, giving priority to rewards you have already started
-3. Finds an eligible stream and watches it, trying another channel if viewing fails or progress stops
-4. Tracks progress through Twitch, claims ready Drops and checks whether the badge has been added to your account
+1. Checks [StreamDatabase](https://streamdatabase.com) for badges currently awarded for watching and skips badges you already own.
+2. Picks a badge, giving priority to rewards you have already started.
+3. Finds an eligible stream and watches it. If the stream drops or progress stops, it switches to another channel.
+4. Tracks progress through Twitch, claims ready Drops and checks whether the badge has been added to your account.
 
-A badge is marked as collected only after Twitch confirms that you own it
+A badge is marked as collected only after Twitch confirms that you own it.
 
 ### Multi-day badges
 
-Some badges require a daily viewing minimum across several days. The program reads completed days and the next available window from Twitch, stops viewing once today's requirement is met, and continues with other eligible badges
+Some badges require watching for a set time every day over several days. The program reads completed days and the next window from Twitch, stops watching once the daily requirement is met, and moves on to other available badges.
 
-These are rolling 24-hour windows rather than calendar days. Completed days are preserved when you skip a day; partial minutes reset when their window closes
+A day is a rolling 24-hour window, not a calendar date. If you skip a day, completed days are kept, while the minutes of an unfinished day reset when its window closes.
 
-For Pokémon evolutions, the program selects the available evolution path automatically without changing your displayed chat badges. You must already own the prerequisite badge or a supported acquired container; the program never purchases subscriptions or gifts
+For Pokémon evolutions, the program picks the right evolution path itself and does not change the badges shown in your chat. Each stage requires the badge from the previous stage. If the first stage is awarded for a subscription or a gifted subscription, the program continues the chain only after Twitch has counted that subscription. The program never buys anything.
 
-Keep the program running to return for later windows, or restart it to resume from Twitch's progress. `--list` shows the daily requirement and current progress without starting viewing or changing the selected path
+Keep the program running so it comes back for later windows, or restart it to continue from Twitch's progress. `--list` shows the daily requirement and current progress without starting a viewing session or changing the selected path.
+
+## Limitations
+
+- Only badges awarded for watching are collected. Badges for subscriptions, purchases, Bits, attending TwitchCon and random rewards are skipped.
+- Paid evolutions are collected only if your account already has the badge from the previous stage.
+- Each run works with one account and watches one stream at a time.
+- Badge conditions come from StreamDatabase, where users fill them in. If it lists the wrong number of minutes, the program will not find the matching reward on Twitch.
+
+## Troubleshooting
+
+**`Found 0 available badges`, or a badge is missing from the list.** Run the program with `--debug`. Each skipped badge is listed with its reason, such as `Already owned`, `Paid or unknown cost` or `Event has not started`.
+
+**`persisted query unavailable, update the utility`.** Twitch has changed its internal requests. Download the latest version of the program.
+
+**`authorization rejected, run with --gen-token`.** The token is no longer valid. Run `--gen-token` and sign in with the same account.
+
+**Progress does not increase.** Make sure only one instance is running and nobody is watching other streams on this account. If progress stalls for 5 minutes, the program switches to another channel on its own.
