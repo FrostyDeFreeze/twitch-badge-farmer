@@ -36,9 +36,28 @@ export async function loadState(path: string, id: string): Promise<CollectorStat
 		!Array.isArray(state.confirmed) ||
 		!('attempts' in state) ||
 		!state.attempts ||
-		typeof state.attempts !== 'object'
+		typeof state.attempts !== 'object' ||
+		Array.isArray(state.attempts)
 	) {
 		throw new Error('State belongs to another account or has an unsupported format')
+	}
+
+	for (const attempt of Object.values(state.attempts)) {
+		if (
+			!attempt ||
+			typeof attempt !== 'object' ||
+			('dailyWindow' in attempt && typeof attempt.dailyWindow !== 'string') ||
+			('dailyCompletedWindow' in attempt && typeof attempt.dailyCompletedWindow !== 'string') ||
+			('dailyCompletedDays' in attempt &&
+				(typeof attempt.dailyCompletedDays !== 'number' ||
+					!Number.isSafeInteger(attempt.dailyCompletedDays) ||
+					attempt.dailyCompletedDays < 0)) ||
+			('claimedInstance' in attempt && typeof attempt.claimedInstance !== 'string') ||
+			('claimPendingAt' in attempt &&
+				(typeof attempt.claimPendingAt !== 'number' || !Number.isFinite(attempt.claimPendingAt) || attempt.claimPendingAt < 0))
+		) {
+			throw new Error('Invalid daily resume state, original file preserved')
+		}
 	}
 
 	return state as CollectorState
