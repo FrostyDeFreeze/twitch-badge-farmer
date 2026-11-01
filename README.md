@@ -158,3 +158,13 @@ Run only one instance per Twitch account and avoid watching other streams on tha
 4. Tracks progress through Twitch, claims ready Drops and checks whether the badge has been added to your account
 
 A badge is marked as collected only after Twitch confirms that you own it
+
+### Multi-day badges
+
+Some badges require a daily viewing minimum across several days. The program reads completed days and the next available window from Twitch, stops viewing once today's requirement is met, and continues with other eligible badges
+
+These are rolling 24-hour windows rather than calendar days. Completed days are preserved when you skip a day; partial minutes reset when their window closes
+
+For Pokémon evolutions, the program selects the available evolution path automatically without changing your displayed chat badges. You must already own the prerequisite badge or a supported acquired container; the program never purchases subscriptions or gifts
+
+Keep the program running to return for later windows, or restart it to resume from Twitch's progress. `--list` shows the daily requirement and current progress without starting viewing or changing the selected path

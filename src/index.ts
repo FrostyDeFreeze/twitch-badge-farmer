@@ -78,21 +78,26 @@ async function main() {
 	log = createLogger({ debug, token: config.token })
 
 	if (mode === 'list') {
-		const twitch = new Twitch(config, controller.signal)
-		const [catalog, globals, owned] = await Promise.all([
+		const twitch = new Twitch(config, controller.signal, log)
+		const [catalog, globals, owned, campaigns] = await Promise.all([
 			fetchJson('https://api.streamdatabase.com/events', { signal: controller.signal, label: 'StreamDatabase' }),
 			twitch.globalBadges(),
-			twitch.badges()
+			twitch.badges(),
+			twitch.inventory()
 		])
-		const { tasks, skipped } = buildTasks(catalog, owned, Date.now(), globals)
+
+		const { tasks, skipped } = buildTasks(catalog, owned, Date.now(), globals, campaigns)
 
 		console.table(
 			tasks.map(task => ({
 				title: task.title,
-				minutes: task.minutes,
-				categories: task.categoryNames.join(', ') || 'Any',
-				channels: task.channels.map(channel => channel.login).join(', ') || 'Any eligible channel',
-				endsUTC: new Date(task.endAt).toISOString()
+				viewing: task.days ? task.minutes + ' min/day × ' + task.days + ' days' : task.minutes + ' min',
+				progress: task.daily
+					? task.daily.completedDays + '/' + task.daily.requiredDays + ' days, ' + task.serverMinutes + '/' + task.minutes + ' min today'
+					: '',
+				nextWindowUTC: task.daily?.nextEligibleAt ? new Date(task.daily.nextEligibleAt).toISOString() : '',
+				categories: (task.categoryNames[0] || 'Any') + (task.categoryNames.length > 1 ? ' + ' + (task.categoryNames.length - 1) : ''),
+				channels: task.channels.map(channel => channel.login).join(', ') || 'Any eligible channel'
 			}))
 		)
 
@@ -111,7 +116,7 @@ async function main() {
 	const collector = new Collector({
 		config,
 		signal: controller.signal,
-		twitch: new Twitch(config, controller.signal),
+		twitch: new Twitch(config, controller.signal, log),
 		state,
 		save: value => saveState(statePath, value),
 		log

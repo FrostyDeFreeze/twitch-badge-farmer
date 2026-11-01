@@ -13,16 +13,17 @@ export interface Channel {
 export interface DropReference {
 	id: string
 	campaignId: string
-	requiredMinutesWatched?: number
+	kind?: 'reward-group'
 }
 
 export interface Task {
 	key: string
 	title: string
-	rewardTitle: string
-	image?: string | undefined
+	rewardNames: string[]
 	availabilityId?: string | number | undefined
 	minutes: number
+	days?: number
+	daily?: DailyProgress
 	startAt: number
 	endAt: number
 	categoryIds: string[]
@@ -36,7 +37,6 @@ export interface GlobalBadge {
 	setID: string
 	version: string | number
 	title: string
-	imageURL?: string
 	user: unknown
 }
 
@@ -64,10 +64,42 @@ export interface Campaign {
 	endAt?: string
 	game?: { id: string } | null
 	timeBasedDrops?: Drop[] | null
+	rewardGroups?: RewardGroup[] | null
+}
+
+export interface DailyProgress {
+	requiredDays: number
+	completedDays: number
+	status: string
+	windowStartedAt: number | null
+	windowEndsAt: number | null
+	nextEligibleAt: number | null
+}
+
+export interface RewardGroup {
+	id: string
+	track?: string | null
+	lane?: string | null
+	progressCriteria?: {
+		requirementType?: string
+		requirements?: { minutesWatched?: number; subs?: number | null; turboSubs?: number | null }
+		repeatableConfig?: { repeatableTimes?: number; resetIntervalSeconds?: number; shouldCompleteAllRepeatsToEarn?: boolean }
+	}
+	self?: {
+		status: string
+		currentMinutesWatched: number | null
+		grantCount: number
+		nextEligibleAt?: string | null
+		currentWindow?: { startedAt: string; expiresAt: string } | null
+		hasPreconditionsMet?: boolean
+		earnedReward?: { id: string } | null
+	} | null
+	rewards?: { distributionType?: string; dropDetail?: { badge?: { setID?: string; version?: string | number } | null } | null; pool?: unknown }[]
 }
 
 export interface DropProgress extends DropSelf {
 	requiredMinutesWatched: number
+	daily?: DailyProgress
 }
 
 export interface Stream {
@@ -84,13 +116,19 @@ export interface SelectedStream extends Stream {
 	drop: DropReference
 }
 
-export type AttemptStatus = 'pending' | 'watching' | 'earned' | 'waiting' | 'unconfirmed' | 'error' | 'expired-or-unavailable'
+export type AttemptStatus =
+	'pending' | 'watching' | 'earned' | 'waiting' | 'waiting-day' | 'waiting-progress' | 'unconfirmed' | 'error' | 'expired-or-unavailable'
 
 export interface Attempt {
 	attemptedMs: number
 	deferUntil: number
 	status: AttemptStatus
 	signature?: string
+	dailyWindow?: string
+	dailyCompletedDays?: number
+	dailyCompletedWindow?: string
+	claimedInstance?: string
+	claimPendingAt?: number
 	serverMinutes?: number
 }
 

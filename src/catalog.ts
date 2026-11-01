@@ -1,4 +1,5 @@
-import type { Campaign, Drop, GlobalBadge, Task } from './types.ts'
+import type { Campaign, Drop, DropProgress, GlobalBadge, Task } from './types.ts'
+import { dailyProgress, matchesReward, rewardBadgeKey } from './rewards.ts'
 
 interface Dates {
 	start_at_date?: string
@@ -7,7 +8,7 @@ interface Dates {
 	end_at_time?: string
 }
 
-interface Objective {
+interface Objective extends Dates {
 	type: string
 	minutes?: number
 	days?: number | null
@@ -30,7 +31,7 @@ interface Availability extends Dates {
 interface CatalogEvent extends Dates {
 	hidden?: boolean
 	twitch_global_badges: {
-		current: { set_id?: string; version: { id?: string | number; title?: string; image_url_4x?: string } }
+		current: { set_id?: string; version: { id?: string | number; title?: string } }
 		availability?: Availability[]
 	}[]
 }
@@ -65,10 +66,27 @@ function dateAt(availability: Dates, event: Dates, prefix: 'start' | 'end', end:
 	return timestamp
 }
 
-function watchMinutes(objectives: Objective[][] | null | undefined, owned: Set<string>) {
+function subscriptionOnly(group: Objective[]) {
+	return group.every(objective => ['twitch_subscription', 'twitch_gift_subscription'].includes(objective.type))
+}
+
+// Twitch names a Drop reward by the full badge title or by its part after the last ' - '
+function rewardNames(...titles: string[]) {
+	return [...new Set(titles.flatMap(title => [title, title.split(' - ').at(-1)!]).map(normalizeName))].filter(Boolean)
+}
+
+function normalizeName(name: string) {
+	return name
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, ' ')
+		.trim()
+}
+
+function watchRequirement(objectives: Objective[][] | null | undefined, owned: Set<string>, progress: DropProgress | undefined, now: number) {
 	if (!Array.isArray(objectives) || !objectives.length) throw new Error('Missing structured objectives')
 
-	const watches: number[] = []
+	const watches: { minutes: number; days: number }[] = []
+	let prerequisite = false
 
 	for (const group of objectives) {
 		if (!Array.isArray(group) || !group.length) throw new Error('Unknown objectives')
@@ -79,25 +97,53 @@ function watchMinutes(objectives: Objective[][] | null | undefined, owned: Set<s
 				objective.twitch_global_chat_badges?.some(badge => owned.has(badgeKey(badge.set_id, badge.version?.id)))
 		)
 
-		if (unlocked) continue
+		if (unlocked) {
+			prerequisite = true
 
-		const options = group.filter(
-			(objective): objective is Objective & { minutes: number } =>
-				objective.type === 'twitch_watch' &&
-				typeof objective.minutes === 'number' &&
-				Number.isSafeInteger(objective.minutes) &&
-				objective.minutes > 0 &&
-				(objective.days == null || objective.days === 1)
-		)
+			continue
+		}
 
-		if (!options.length) throw new Error('Unsupported, multi-day or unmet objectives')
+		const options = group
+			.filter(
+				(objective): objective is Objective & { minutes: number } =>
+					objective.type === 'twitch_watch' &&
+					typeof objective.minutes === 'number' &&
+					Number.isSafeInteger(objective.minutes) &&
+					objective.minutes > 0 &&
+					(objective.days == null || (Number.isSafeInteger(objective.days) && objective.days > 0))
+			)
+			.sort((a, b) => a.minutes * (a.days ?? 1) - b.minutes * (b.days ?? 1))
 
-		watches.push(Math.min(...options.map(objective => objective.minutes)))
+		if (!options.length) {
+			if (progress?.daily && subscriptionOnly(group)) continue
+
+			throw new Error('Unsupported or unmet objectives')
+		}
+
+		const watch = options[0]!
+
+		if (watch.end_at_date) {
+			const deadline = dateAt(watch, {}, 'end', true)
+			const completed = watches.reduce((sum, item) => sum + item.days, 0) + (watch.days ?? 1)
+
+			if (now >= deadline && (progress?.daily?.completedDays ?? 0) < completed) throw new Error('Viewing stage expired')
+		}
+
+		watches.push({ minutes: watch.minutes, days: watch.days ?? 1 })
 	}
 
-	if (watches.length !== 1) throw new Error('Ambiguous viewing objectives')
+	if (!watches.length || (watches.length > 1 && !progress?.daily)) throw new Error('Ambiguous viewing objectives')
 
-	return watches[0]!
+	const minutes = watches[0]!.minutes
+	const days = watches.reduce((sum, watch) => sum + watch.days, 0)
+
+	if (
+		watches.some(watch => watch.minutes !== minutes) ||
+		(watches.length > 1 && (progress!.requiredMinutesWatched !== minutes || progress!.daily!.requiredDays !== days))
+	)
+		throw new Error('Unsupported staged viewing objectives')
+
+	return { minutes, days, prerequisite }
 }
 
 function restrictions(availability: Availability) {
@@ -126,8 +172,6 @@ function restrictions(availability: Availability) {
 }
 
 export function matchesDrop(task: Task, campaign: Campaign, drop: Drop, now = Date.now()) {
-	const names = [task.title, task.rewardTitle].filter(Boolean).map(name => name.trim().toLowerCase())
-
 	return (
 		(!campaign.startAt || Date.parse(campaign.startAt) <= now) &&
 		(!campaign.endAt || Date.parse(campaign.endAt) > now) &&
@@ -138,7 +182,7 @@ export function matchesDrop(task: Task, campaign: Campaign, drop: Drop, now = Da
 		drop.self?.hasPreconditionsMet !== false &&
 		Date.parse(drop.startAt) <= now &&
 		Date.parse(drop.endAt) > now &&
-		drop.benefitEdges?.some(edge => typeof edge.benefit?.name === 'string' && names.includes(edge.benefit.name.trim().toLowerCase()))
+		drop.benefitEdges?.some(edge => typeof edge.benefit?.name === 'string' && task.rewardNames.includes(normalizeName(edge.benefit.name)))
 	)
 }
 
@@ -154,6 +198,7 @@ export function buildTasks(
 
 	const tasks = new Map<string, Task>()
 	const skipped: SkippedBadge[] = []
+	const nameKeys = new Map<string, Set<string>>()
 
 	for (const event of data.data as CatalogEvent[]) {
 		if (!Array.isArray(event.twitch_global_badges)) throw new Error('StreamDatabase: missing badge list')
@@ -162,6 +207,9 @@ export function buildTasks(
 			const key = badgeKey(badge.current?.set_id, badge.current?.version?.id)
 			const rewardTitle = badge.current.version.title || key
 			const title = globals.get(key)?.title || rewardTitle
+			const names = rewardNames(title, rewardTitle)
+
+			for (const name of names) nameKeys.set(name, (nameKeys.get(name) ?? new Set()).add(key))
 
 			if (!badge.availability?.length) {
 				skipped.push({ key, title, reason: 'Missing availability conditions' })
@@ -179,7 +227,7 @@ export function buildTasks(
 					if (owned.has(key)) throw new Error('Already owned')
 					if (event.hidden || availability.hidden) throw new Error('Hidden record')
 					if (availability.scope !== 'global') throw new Error('Not a global badge')
-					if (availability.cost !== 'free') throw new Error('Paid or unknown cost')
+					if (!['free', 'paid'].includes(availability.cost || '')) throw new Error('Paid or unknown cost')
 					if (availability.revocable) throw new Error('Temporary badge')
 
 					if (availability.chance_denominator != null && availability.chance_denominator !== 1) {
@@ -188,22 +236,74 @@ export function buildTasks(
 
 					if (now < startAt) throw new Error('Event has not started')
 
-					const minutes = watchMinutes(availability.objectives, owned)
+					const rewards = campaigns.flatMap(campaign =>
+						(campaign.rewardGroups ?? [])
+							.filter(
+								group =>
+									rewardBadgeKey(group) === key &&
+									(!campaign.startAt || Date.parse(campaign.startAt) <= now) &&
+									(!campaign.endAt || Date.parse(campaign.endAt) > now)
+							)
+							.flatMap(group => {
+								const progress = dailyProgress(group, now)
+
+								return progress ? [{ campaign, group, progress }] : []
+							})
+					)
+
+					const reward = rewards.length === 1 ? rewards[0] : undefined
+					const paid = availability.cost === 'paid'
+					let requirement
+
+					try {
+						requirement = watchRequirement(availability.objectives, owned, reward?.progress, now)
+					} catch (error) {
+						if (paid) throw new Error('Paid or unknown cost')
+
+						throw error
+					}
+
+					const { minutes, days, prerequisite } = requirement
+
+					// an owned prerequisite unlocks a paid evolution; an acquired container must already show on Twitch
+					if (paid && !(days > 1 && (prerequisite || (reward && availability.objectives?.some(subscriptionOnly)))))
+						throw new Error('Paid or unknown cost')
+					if (days > 1 && rewards.length > 1) throw new Error('Ambiguous daily reward')
+					// a listed group without usable progress means Twitch rejects it, such as for unmet prerequisites
+					if (
+						days > 1 &&
+						!rewards.length &&
+						campaigns.some(campaign => campaign.rewardGroups?.some(group => rewardBadgeKey(group) === key))
+					)
+						throw new Error('Daily reward unavailable on Twitch')
+
 					const task: Task = {
 						key,
 						title,
-						rewardTitle,
-						image: globals.get(key)?.imageURL || badge.current.version.image_url_4x,
+						rewardNames: names,
 						availabilityId: availability._id,
 						minutes,
+						...(days > 1 ? { days } : {}),
 						startAt,
 						endAt,
 						...restrictions(availability)
 					}
 
+					if (days > 1 && reward) {
+						if (!matchesReward(task, reward.campaign, reward.group, now)) throw new Error('Daily reward requirements do not match')
+
+						task.drop = { id: reward.group.id, campaignId: reward.campaign.id, kind: 'reward-group' }
+						task.serverMinutes = reward.progress.currentMinutesWatched
+						task.daily = reward.progress.daily!
+					}
+
 					const previous = tasks.get(key)
 
-					if (!previous || minutes < previous.minutes || (minutes === previous.minutes && endAt < previous.endAt)) {
+					if (
+						!previous ||
+						minutes * days < previous.minutes * (previous.days ?? 1) ||
+						(minutes * days === previous.minutes * (previous.days ?? 1) && endAt < previous.endAt)
+					) {
 						tasks.set(key, task)
 					}
 				} catch (error) {
@@ -216,6 +316,11 @@ export function buildTasks(
 	}
 
 	for (const task of tasks.values()) {
+		// a short name shared by several catalog badges cannot identify a reward
+		task.rewardNames = task.rewardNames.filter(name => nameKeys.get(name)!.size === 1)
+
+		if (task.days) continue
+
 		const matches = campaigns.flatMap(campaign =>
 			(campaign.timeBasedDrops ?? [])
 				.filter(

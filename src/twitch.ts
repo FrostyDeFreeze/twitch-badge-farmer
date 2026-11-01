@@ -1,6 +1,10 @@
-import type { Campaign, Config, DropProgress, DropReference, GlobalBadge, SelectedStream, Stream, Task } from './types.ts'
+import type { Campaign, Config, DropProgress, DropReference, GlobalBadge, RewardGroup, SelectedStream, Stream, Task } from './types.ts'
 
 interface GqlData {
+	ViewerRewardDropInventory: { currentUser?: { id?: string; inventory?: { viewerRewardDropCampaignsInProgress?: Campaign[] | null } } | null }
+	DropChannelCampaignsProgress: { channelDropCampaignsProgress?: Campaign[] | null }
+	ProgressionTrackSelections: { trackSelections?: { track: string; lane: string | null }[] | null }
+	SetProgressionTrackSelection: { setTrackSelection?: { error?: string | null } | null }
 	GlobalBadges: { badges?: GlobalBadge[] }
 	ViewerCard: { channelViewer?: { earnedBadges?: { setID: string; version: string | number }[] } | null }
 	Inventory: { currentUser?: { inventory?: { dropCampaignsInProgress?: Campaign[] | null } } | null }
@@ -28,6 +32,8 @@ interface StreamOptions {
 
 import { fetchResponse, fetchJson, fetchText } from './fetch.ts'
 import { matchesDrop } from './catalog.ts'
+import { dailyProgress, matchesReward } from './rewards.ts'
+import { createLogger, type Logger } from './logger.ts'
 
 const USER_AGENT =
 	'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/144.1 Mobile/15E148 Safari/604.1'
@@ -37,6 +43,12 @@ const QUERIES: Partial<Record<keyof GqlData, string>> = {
 	DropsHighlightService_AvailableDrops: '782dad0f032942260171d2d80a654f88bdd0c5a9dddc392e9bc92218a0f42d20',
 	DropsPage_ClaimDropRewards: 'a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930'
 }
+
+const REWARD_FIELDS = `id track lane
+ progressCriteria { requirementType requirements { minutesWatched subs turboSubs }
+  repeatableConfig { repeatableTimes resetIntervalSeconds shouldCompleteAllRepeatsToEarn } }
+ self { status currentMinutesWatched grantCount nextEligibleAt currentWindow { startedAt expiresAt } hasPreconditionsMet earnedReward { id } }
+ rewards { distributionType dropDetail { badge { setID version } } pool { rewards { id } } }`
 
 function cdnUrl(value: string, base: string | URL) {
 	const url = new URL(value, base)
@@ -115,15 +127,18 @@ export class Twitch {
 	config: Config
 	signal: AbortSignal | undefined
 	playback: { id: string; url: string } | null
+	selectedTracks = new Map<string, string>()
+	log: Logger
 
-	constructor(config: Config, signal?: AbortSignal) {
+	constructor(config: Config, signal?: AbortSignal, log = createLogger({ token: config.token })) {
 		this.config = config
 		this.signal = signal
+		this.log = log
 		this.playback = null
 	}
 
-	headers(prefix = 'Bearer') {
-		return { Authorization: prefix + ' ' + this.config.token, 'Client-Id': this.config.client_id, 'User-Agent': USER_AGENT }
+	headers() {
+		return { Authorization: 'Bearer ' + this.config.token, 'Client-Id': this.config.client_id, 'User-Agent': USER_AGENT }
 	}
 
 	async gql<K extends keyof GqlData>(operationName: K, variables: Record<string, unknown>, query?: string): Promise<GqlData[K]> {
@@ -177,7 +192,7 @@ export class Twitch {
 	}
 
 	async globalBadges() {
-		const data = await this.gql('GlobalBadges', {}, 'query GlobalBadges { badges { setID version title imageURL(size: QUADRUPLE) user { id } } }')
+		const data = await this.gql('GlobalBadges', {}, 'query GlobalBadges { badges { setID version title user { id } } }')
 
 		if (!Array.isArray(data.badges)) throw new Error('GlobalBadges: missing badge list')
 
@@ -252,6 +267,42 @@ export class Twitch {
 		for (const stream of streams) {
 			if (exclude.has(stream.user_id)) continue
 
+			if (task.days) {
+				const data = await this.gql(
+					'DropChannelCampaignsProgress',
+					{ channelID: stream.user_id },
+					`query DropChannelCampaignsProgress($channelID: ID!) {
+      channelDropCampaignsProgress(channelID: $channelID) { id startAt endAt rewardGroups { ${REWARD_FIELDS} } }
+     }`
+				)
+
+				const campaigns = data.channelDropCampaignsProgress
+
+				if (campaigns === null) continue
+				if (!Array.isArray(campaigns)) throw new Error('Twitch: daily channel rewards unavailable')
+
+				const matches = campaigns.flatMap(campaign =>
+					(campaign.rewardGroups ?? [])
+						.filter(
+							group =>
+								(!expectedDrop ||
+									(expectedDrop.kind === 'reward-group' &&
+										expectedDrop.campaignId === campaign.id &&
+										expectedDrop.id === group.id)) &&
+								matchesReward(task, campaign, group)
+						)
+						.map(group => ({ campaign, group }))
+				)
+
+				if (matches.length !== 1) continue
+
+				const { campaign, group } = matches[0]!
+
+				await this.selectTrack(group)
+
+				return { ...stream, drop: { id: group.id, campaignId: campaign.id, kind: 'reward-group' } }
+			}
+
 			const data = await this.gql('DropsHighlightService_AvailableDrops', { channelID: stream.user_id })
 			const campaigns = data.channel?.viewerDropCampaigns
 
@@ -267,7 +318,7 @@ export class Twitch {
 				)
 
 				if (drop) {
-					return { ...stream, drop: { id: drop.id, campaignId: campaign.id, requiredMinutesWatched: drop.requiredMinutesWatched } }
+					return { ...stream, drop: { id: drop.id, campaignId: campaign.id } }
 				}
 			}
 		}
@@ -275,27 +326,122 @@ export class Twitch {
 		return null
 	}
 
+	async selectTrack(group: RewardGroup) {
+		if (!group.track && !group.lane) return
+		if (!group.track || !group.lane) throw new Error('Twitch: incomplete progression track')
+
+		const { track, lane } = group
+
+		const read = async () => {
+			const data = await this.gql(
+				'ProgressionTrackSelections',
+				{ tracks: [track] },
+				'query ProgressionTrackSelections($tracks: [ID!]!) { trackSelections(tracks: $tracks) { track lane } }'
+			)
+
+			if (!Array.isArray(data.trackSelections)) throw new Error('Twitch: missing progression selection')
+
+			return data.trackSelections.find(selection => selection.track === track)?.lane
+		}
+
+		const selected = await read()
+
+		if (selected !== lane) {
+			if (this.selectedTracks.has(track) && selected !== this.selectedTracks.get(track))
+				throw new Error('Twitch: progression selection changed outside the collector')
+
+			const data = await this.gql(
+				'SetProgressionTrackSelection',
+				{ input: { track, lane } },
+				'mutation SetProgressionTrackSelection($input: SetTrackSelectionInput!) { setTrackSelection(input: $input) { error } }'
+			)
+
+			if (!data.setTrackSelection || data.setTrackSelection.error !== null) throw new Error('Twitch: progression selection rejected')
+			if ((await read()) !== lane) throw new Error('Twitch: progression selection was not confirmed')
+		}
+
+		this.selectedTracks.set(track, lane)
+	}
+
+	async rewardCampaigns() {
+		const data = await this.gql(
+			'ViewerRewardDropInventory',
+			{},
+			`query ViewerRewardDropInventory {
+    currentUser { id inventory { viewerRewardDropCampaignsInProgress { id startAt endAt rewardGroups { ${REWARD_FIELDS} } } } }
+   }`
+		)
+
+		if (data.currentUser?.id !== this.config.id) throw new Error('Inventory: missing or mismatched account identity')
+
+		const campaigns = data.currentUser.inventory?.viewerRewardDropCampaignsInProgress
+
+		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Inventory: missing daily reward campaigns')
+
+		if (
+			campaigns?.some(
+				campaign =>
+					!campaign ||
+					typeof campaign.id !== 'string' ||
+					!campaign.id ||
+					!Array.isArray(campaign.rewardGroups) ||
+					campaign.rewardGroups.some(group => !group || typeof group.id !== 'string' || !group.id || !Array.isArray(group.rewards))
+			)
+		) {
+			throw new Error('Inventory: invalid daily reward campaigns')
+		}
+
+		return campaigns ?? []
+	}
+
 	async inventory() {
-		const data = await this.gql('Inventory', { fetchRewardCampaigns: true })
+		const [data, daily] = await Promise.all([
+			this.gql('Inventory', { fetchRewardCampaigns: true }),
+			this.rewardCampaigns().catch(error => {
+				if (!(error instanceof Error) || error.fatal || this.signal?.aborted) throw error
+
+				// the daily query is unpersisted and private, so a schema change must not stop ordinary Drops
+				this.log.debug('[TWITCH] Daily rewards unavailable: ' + error.message)
+
+				return []
+			})
+		])
 
 		if (data.currentUser === null) {
 			const error = new Error('Inventory: authorization rejected, run with --gen-token')
+
 			error.fatal = true
+
 			throw error
 		}
 
 		const campaigns = data.currentUser?.inventory?.dropCampaignsInProgress
 
-		if (campaigns === null) return []
-		if (!Array.isArray(campaigns)) throw new Error('Inventory: missing Drops campaigns')
+		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Inventory: missing Drops campaigns')
 
-		return campaigns
+		return [...(campaigns ?? []), ...daily]
 	}
 
-	async dropProgress(drop: DropReference, campaigns?: Campaign[]): Promise<DropProgress | null> {
+	async dropProgress(drop: DropReference, campaigns?: Campaign[], now = Date.now()): Promise<DropProgress | null> {
 		campaigns ??= await this.inventory()
 
-		const campaign = campaigns.find(campaign => campaign.id === drop.campaignId)
+		if (drop.kind === 'reward-group') {
+			const campaign = campaigns.find(campaign => campaign.id === drop.campaignId && campaign.rewardGroups)
+			const group = campaign?.rewardGroups?.find(group => group.id === drop.id)
+
+			if (!campaign || !group) return null
+
+			const progress = dailyProgress(group, now)
+
+			if (progress?.daily?.status === 'CLAIMABLE' && progress.daily.completedDays >= progress.daily.requiredDays && !progress.isClaimed) {
+				// viewer reward groups use the web client's account/campaign/group instance format
+				progress.dropInstanceID = this.config.id + '#' + campaign.id + '#' + group.id
+			}
+
+			return progress
+		}
+
+		const campaign = campaigns.find(campaign => campaign.id === drop.campaignId && campaign.timeBasedDrops)
 		const item = campaign?.timeBasedDrops?.find(item => item.id === drop.id)
 
 		if (!item?.self) return null
