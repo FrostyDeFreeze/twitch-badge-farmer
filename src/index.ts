@@ -48,14 +48,23 @@ async function main() {
 	log = createLogger({ debug })
 
 	if (mode === 'help') {
+		const section = (title: string, rows: [string, string][]) => [title, ...rows.map(([name, text]) => '  ' + name.padEnd(18) + text)]
+
 		console.log(
 			[
-				'Badge Farmer',
-				`${Bun.isStandaloneExecutable ? basename(process.execPath) : 'bun src/index.ts'} [--config config.json] [--debug] [mode]`,
-				'--list   List eligible badges without viewing',
-				'--gen-token   Generate a token and save config.json',
-				'--debug   Show technical diagnostics and skipped badges',
-				'No mode: keep running, Ctrl+C to stop'
+				`Usage: ${Bun.isStandaloneExecutable ? basename(process.execPath) : 'bun src/index.ts'} [mode] [options]`,
+				'',
+				...section('Modes:', [
+					['(none)', 'Collect badges until stopped with Ctrl+C'],
+					['--list', 'Show available badges without watching'],
+					['--gen-token', 'Sign in to Twitch and save the config']
+				]),
+				'',
+				...section('Options:', [
+					['--config <file>', 'Use another config file (default: config.json)'],
+					['--debug', 'Show technical details and skipped badges'],
+					['--help', 'Show this help']
+				])
 			].join('\n')
 		)
 
