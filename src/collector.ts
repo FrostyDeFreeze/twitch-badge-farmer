@@ -1,6 +1,6 @@
 import type { Attempt, AttemptStatus, Campaign, CollectorState, Config, DropReference, GlobalBadge, SelectedStream, Task } from './types.ts'
 import type { Twitch } from './twitch.ts'
-import { createLogger, type Logger } from './logger.ts'
+import { clock, createLogger, duration, type Logger } from './logger.ts'
 
 interface CollectorOptions {
 	config: Config
@@ -150,7 +150,7 @@ export class Collector {
 		try {
 			await this.save(this.state)
 		} catch {
-			const error = new Error('Could not save state, viewing stopped')
+			const error = new Error('State | Could not save | Viewing stopped')
 
 			error.fatal = true
 
@@ -188,8 +188,8 @@ export class Collector {
 
 				if (this.signal?.aborted || error.fatal) throw error
 
-				this.log.warn(`Could not refresh owned badges | Retrying in ${Math.ceil((this.nextInventory - now) / 1000)}s`)
-				this.log.debug('[TWITCH] Badge ownership refresh: ' + error.message)
+				this.log.warn(`Could not refresh owned badges | Retrying in ${duration(this.nextInventory - now)}`)
+				this.log.debug('[TWITCH] Owned badges | ' + error.message)
 			}
 		}
 
@@ -213,7 +213,7 @@ export class Collector {
 				if (message !== this.catalogMessage) {
 					this.log.info(message)
 				}
-				this.log.debug(`[CATALOG] Skipped records: ${skipped.length}`)
+				this.log.debug(`[CATALOG] Refreshed | Available: ${tasks.length} | Skipped: ${skipped.length}`)
 				this.catalogMessage = message
 
 				const messages = new Set(describeSkipped(skipped))
@@ -230,8 +230,8 @@ export class Collector {
 
 				if (this.signal?.aborted || error.fatal) throw error
 
-				this.log.warn(`Could not refresh available badges | Retrying in ${Math.ceil((this.nextCatalog - now) / 1000)}s`)
-				this.log.debug('[CATALOG] Refresh: ' + error.message)
+				this.log.warn(`Could not refresh the badge catalog | Retrying in ${duration(this.nextCatalog - now)}`)
+				this.log.debug('[CATALOG] Refresh failed | ' + error.message)
 			}
 		}
 	}
@@ -245,25 +245,28 @@ export class Collector {
 
 		if (status === 'earned') {
 			delete this.state.attempts[task.key]
-			this.log.success('Badge earned: ' + task.title)
-			this.log.debug('[REWARD] Ownership confirmed: ' + task.key)
+			this.log.success(task.title + ' | Badge earned')
+			this.log.debug('[REWARD] ' + task.key + ' | Ownership confirmed')
 		} else {
 			const reasons: Partial<Record<AttemptStatus, string>> = {
-				waiting: 'no eligible live stream offering this badge',
-				'waiting-day': 'daily viewing complete, waiting for the next window',
-				'waiting-progress': 'waiting for Twitch daily progress',
-				unconfirmed: 'badge ownership not confirmed within the attempt limit',
-				error: 'repeated viewing failures',
-				'expired-or-unavailable': 'badge expired or requirements no longer available'
+				waiting: 'No eligible live stream',
+				'waiting-day': "Today's viewing done",
+				'waiting-progress': 'Waiting for Twitch daily progress',
+				unconfirmed: 'Viewing done, but Twitch has not granted the badge',
+				error: 'Failed 3 times in a row',
+				'expired-or-unavailable': 'Expired or no longer available'
 			}
-			const reason = reasons[status] || status
-
-			const message = `${task.title} | ${reason}${deferMs ? ' | Retrying in ' + Math.ceil(deferMs / 1000) + 's' : ''}`
+			const next = !deferMs
+				? ''
+				: status === 'waiting-day'
+					? 'Next window at ' + clock(now + deferMs)
+					: (status === 'waiting-progress' ? 'Checking again in ' : 'Retrying in ') + duration(deferMs)
+			const message = [task.title, reasons[status] || status, next].filter(Boolean).join(' | ')
 
 			if (status === 'error' || status === 'unconfirmed') this.log.warn(message)
 			// waiting is reported once when the queue becomes idle
 			else if (status !== 'waiting') this.log.log({ tag: 'WAIT', message })
-			this.log.debug(`[VIEWING] ${task.key}: ${status} | ${reason}`)
+			this.log.debug(`[VIEWING] ${task.key} | Stopped: ${status}`)
 		}
 
 		this.state.active = null
@@ -332,7 +335,7 @@ export class Collector {
 		if (progress.currentMinutesWatched !== active.progressMinutes) active.stalledMs = 0
 		active.progressMinutes = progress.currentMinutesWatched
 
-		const message = `${active.task.title} | Twitch progress: ${daily.completedDays}/${daily.requiredDays} days | Today: ${progress.currentMinutesWatched}/${progress.requiredMinutesWatched} min`
+		const message = `${active.task.title} | Days: ${daily.completedDays}/${daily.requiredDays} | Today: ${progress.currentMinutesWatched}/${progress.requiredMinutesWatched} min`
 
 		if (message !== active.progressMessage) this.log.log({ tag: 'WATCH', message })
 
@@ -385,7 +388,7 @@ export class Collector {
 		let now = this.now()
 
 		if (!this.inventoryReady || !this.catalog) {
-			return this.idle('Waiting for the catalog and Twitch badge ownership data')
+			return this.idle('Loading the badge catalog and owned badges')
 		}
 
 		if (this.active && this.owned.has(this.active.task.key)) {
@@ -432,8 +435,8 @@ export class Collector {
 				this.active.progressMinutes = null
 				this.active.stalledMs = 0
 
-				this.log.info(task.title + ' | Requirements changed, restarting session')
-				this.log.debug('[VIEWING] Requirements changed: ' + task.key)
+				this.log.info(task.title + ' | Catalog conditions changed | Restarting the attempt')
+				this.log.debug('[VIEWING] ' + task.key + ' | Signature changed | Attempt reset')
 			}
 
 			if (!feasible(task, now, this.state.attempts[task.key])) {
@@ -443,7 +446,7 @@ export class Collector {
 			}
 
 			if (task.minutes !== this.active.task.minutes && task.catalogMinutes !== undefined) {
-				this.log.info(`${task.title} | Twitch requires ${task.minutes} min, the catalog lists ${task.catalogMinutes}`)
+				this.log.info(`${task.title} | Required viewing: ${task.minutes} min (catalog: ${task.catalogMinutes} min)`)
 			}
 
 			this.active.task = task
@@ -467,19 +470,18 @@ export class Collector {
 				const windows = tasks.flatMap(task => nextWindowAt(task, now, this.state.attempts[task.key]) ?? [])
 
 				if (windows.length) {
-					const next = new Date(Math.min(...windows))
-					const time = [next.getHours(), next.getMinutes()].map(value => String(value).padStart(2, '0')).join(':')
+					const next = Math.min(...windows)
 
 					// wake when the window opens, not up to an idle interval later
-					return this.idle('Waiting for the next daily window | Opens at ' + time, Math.min(IDLE_INTERVAL, next.getTime() - now))
+					return this.idle('Waiting for the next daily window | Opens at ' + clock(next), Math.min(IDLE_INTERVAL, next - now))
 				}
 
 				return this.idle(
 					(tasks.some(task => feasible(task, now, this.state.attempts[task.key]))
 						? 'No eligible live streams'
 						: tasks.length
-							? 'Not enough time left to finish available badges'
-							: 'No unearned badges available') + ` | Checking again in ${IDLE_INTERVAL / 60_000} min`,
+							? 'Not enough time left for available badges'
+							: 'No badges to collect') + ` | Checking again in ${duration(IDLE_INTERVAL)}`,
 					IDLE_INTERVAL
 				)
 			}
@@ -515,11 +517,23 @@ export class Collector {
 				progressMessage: ''
 			}
 
+			const viewing =
+				`${task.minutes} min${(task.days ?? 1) > 1 ? '/day × ' + task.days + ' days' : ''}` +
+				(task.catalogMinutes === undefined ? '' : ` (catalog: ${task.catalogMinutes} min)`)
+
 			this.log.info(
-				`Selected badge: ${task.title} | Required viewing: ${task.minutes} min${(task.days ?? 1) > 1 ? '/day × ' + task.days + ' days' : ''}` +
-					(task.catalogMinutes === undefined ? '' : ` (Twitch; the catalog lists ${task.catalogMinutes} min)`)
+				[
+					task.title,
+					'Selected',
+					'Required viewing: ' + viewing,
+					task.serverMinutes ? `Progress: ${task.serverMinutes}/${task.minutes} min` : ''
+				]
+					.filter(Boolean)
+					.join(' | ')
 			)
-			this.log.debug(`[VIEWING] Task: ${task.key}${task.serverMinutes ? ', already watched ' + task.serverMinutes + ' min' : ''}`)
+			this.log.debug(
+				`[VIEWING] ${task.key} | Reward: ${task.drop ? (task.drop.kind === 'reward-group' ? 'daily group ' : 'Drop ') + task.drop.id : 'looked up on channels'}`
+			)
 
 			await this.persist()
 		}
@@ -581,8 +595,11 @@ export class Collector {
 					active.lastGoodAt = null
 
 					active.stalledMs = 0
-					this.log.log({ tag: 'WATCH', message: `${active.task.title} | Channel: ${stream.user_login}` })
-					this.log.debug(`[VIEWING] Stream: ${stream.user_login}, category: ${stream.game_name}`)
+					this.log.log({
+						tag: 'WATCH',
+						message: [active.task.title, 'Watching ' + stream.user_login, stream.game_name].filter(Boolean).join(' | ')
+					})
+					this.log.debug(`[VIEWING] ${active.task.key} | Broadcast: ${stream.id} | Reward: ${stream.drop.id}`)
 				}
 
 				active.stream = stream
@@ -624,7 +641,7 @@ export class Collector {
 					if (progress.currentMinutesWatched !== active.progressMinutes) active.stalledMs = 0
 					active.progressMinutes = progress.currentMinutesWatched
 
-					message = `${active.task.title} | Twitch progress: ${progress.currentMinutesWatched}/${progress.requiredMinutesWatched} min`
+					message = `${active.task.title} | Progress: ${progress.currentMinutesWatched}/${progress.requiredMinutesWatched} min`
 
 					if (progress.isClaimed) active.stalledMs = 0
 				} else {
@@ -635,7 +652,9 @@ export class Collector {
 
 				if (message !== active.progressMessage) {
 					this.log.log({ tag: 'WATCH', message })
-					this.log.debug('[TWITCH] ' + active.task.key + ': ' + message)
+					this.log.debug(
+						`[TWITCH] ${active.task.key} | ${progress ? `Drop ${active.drop!.id}: ${progress.currentMinutesWatched}/${progress.requiredMinutesWatched} min, claimed: ${progress.isClaimed ? 'yes' : 'no'}` : 'Drop not in the inventory yet'}`
+					)
 				}
 				active.progressMessage = message
 				active.nextProgress = now + 60_000
@@ -649,7 +668,9 @@ export class Collector {
 				active.lastGoodAt = null
 				active.stalledMs = 0
 				this.twitch.playback = null
-				this.log.warn(`${active.task.title} | No Twitch progress for 5 min on ${active.stream!.user_login} | Trying another eligible channel`)
+				this.log.warn(
+					`${active.task.title} | No progress on ${active.stream!.user_login} for ${duration(STALL_INTERVAL)} | Switching channel`
+				)
 			}
 
 			active.failures = 0
@@ -666,7 +687,6 @@ export class Collector {
 			active.failures++
 
 			const delay = Math.max(WATCH_INTERVAL * 2 ** (active.failures - 1), error.retryAfterMs || 0)
-			const next = active.failures >= 3 ? 'Pausing this badge' : 'Retrying in ' + Math.ceil(delay / 1000) + 's'
 			const rotate = phase === 'VIEWING' && active.stream && error.status !== 429 && !error.retryAfterMs && active.failures < 3
 
 			if (rotate) {
@@ -675,15 +695,13 @@ export class Collector {
 				active.retryAt = this.now() + delay
 			}
 
-			const reason =
-				error.status === 429
-					? 'Request limit reached'
-					: phase === 'VIEWING'
-						? 'Stream connection interrupted'
-						: 'Could not update Twitch data'
-			this.log.warn(`${active.task.title} | ${reason} | ${rotate ? 'Trying another eligible channel' : next}`)
+			const reason = error.status === 429 ? 'Twitch request limit' : phase === 'VIEWING' ? 'Stream connection lost' : 'Twitch data unavailable'
+
+			// the third failure is reported once by finish
+			if (active.failures < 3)
+				this.log.warn(`${active.task.title} | ${reason} | ${rotate ? 'Switching channel' : 'Retrying in ' + duration(delay)}`)
 			this.log.debug(
-				`[${phase}] ${active.task.key} [${active.stream?.user_login || 'channel selection'}]: ${error.message} | failure ${active.failures}/3, ${rotate ? 'fallback ' : ''}${next}`
+				`[${phase}] ${active.task.key} | ${active.stream?.user_login || 'Channel selection'} | ${error.message} | Failure ${active.failures}/3`
 			)
 
 			if (active.failures >= 3) {

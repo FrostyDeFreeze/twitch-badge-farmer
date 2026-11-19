@@ -38,7 +38,7 @@ export async function loadState(path: string, id: string): Promise<CollectorStat
 		state = JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, ''))
 	} catch (error) {
 		if (error instanceof Error && !(error instanceof SyntaxError) && error.code !== 'ENOENT')
-			throw new Error('Could not read state: ' + error.code)
+			throw new Error('State | Could not read (' + error.code + ')')
 	}
 
 	// state only spares repeated work, so a missing, old, foreign or damaged file starts over

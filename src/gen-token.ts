@@ -30,7 +30,7 @@ import { createLogger } from './logger.ts'
 export async function generateToken(configPath: string, signal?: AbortSignal, log = createLogger()) {
 	const clientId = typeof example?.client_id === 'string' ? example.client_id.trim() : ''
 
-	if (!clientId) throw new Error('config.example.json requires a Client ID')
+	if (!clientId) throw new Error('Config | config.example.json has no Client ID')
 
 	// use the same device flow as TwitchDropsMiner without requesting scopes
 	const device = await fetchJson<DeviceResponse>('https://id.twitch.tv/oauth2/device', {
@@ -48,7 +48,7 @@ export async function generateToken(configPath: string, signal?: AbortSignal, lo
 		!Number.isFinite(device.expires_in) ||
 		device.expires_in <= 0
 	) {
-		throw new Error('OAuth: invalid device authorization response')
+		throw new Error('OAuth | Invalid device authorization response')
 	}
 
 	const expiresAt = Date.now() + device.expires_in * 1000
@@ -57,9 +57,9 @@ export async function generateToken(configPath: string, signal?: AbortSignal, lo
 	activation.searchParams.set('device-code', device.user_code)
 	signal?.throwIfAborted()
 
-	log.info('Open ' + activation.href)
+	log.info('Activation link: ' + activation.href)
 	log.info('Activation code: ' + device.user_code)
-	log.debug('[AUTH] No additional scopes requested')
+	log.debug('[AUTH] Device code received | Scopes: none')
 	log.log({ tag: 'WAIT', message: 'Waiting for Twitch authorization | Ctrl+C to cancel' })
 
 	const command = process.platform === 'win32' ? 'rundll32.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
@@ -103,12 +103,12 @@ export async function generateToken(configPath: string, signal?: AbortSignal, lo
 		try {
 			result = (await response.json()) as TokenResponse
 		} catch {
-			throw new Error('OAuth: invalid token response')
+			throw new Error('OAuth | Invalid token response')
 		}
 
 		if (response.ok) {
 			if (typeof result?.access_token !== 'string' || !/^[a-z0-9]+$/i.test(result.access_token)) {
-				throw new Error('OAuth: missing access token')
+				throw new Error('OAuth | Missing access token')
 			}
 			token = result.access_token
 			break
@@ -121,13 +121,13 @@ export async function generateToken(configPath: string, signal?: AbortSignal, lo
 			interval += 5000
 			continue
 		}
-		if (reason === 'access_denied') throw new Error('OAuth: authorization denied, config unchanged')
+		if (reason === 'access_denied') throw new Error('OAuth | Authorization denied | Config unchanged')
 		if (['expired_token', 'invalid device code'].includes(reason || '')) break
 
-		throw new Error('OAuth: authorization rejected, run with --gen-token again')
+		throw new Error('OAuth | Authorization rejected | Run with --gen-token again')
 	}
 
-	if (!token) throw new Error('OAuth: activation code expired, run with --gen-token again')
+	if (!token) throw new Error('OAuth | Activation code expired | Run with --gen-token again')
 
 	const data = await fetchJson<TokenIdentity>('https://id.twitch.tv/oauth2/validate', {
 		headers: { Authorization: 'OAuth ' + token },
@@ -136,13 +136,13 @@ export async function generateToken(configPath: string, signal?: AbortSignal, lo
 		label: 'OAuth token details'
 	})
 
-	if (data?.client_id !== clientId) throw new Error('OAuth: token Client ID mismatch, config unchanged')
+	if (data?.client_id !== clientId) throw new Error('OAuth | Token Client ID mismatch | Config unchanged')
 
 	// allow zero expiry reported by TV tokens
 	const user = { id: data.user_id, login: data.login }
 
 	if (!/^\d+$/.test(user?.id) || typeof user?.login !== 'string' || !/^[a-z0-9_]+$/i.test(user.login)) {
-		throw new Error('Twitch: missing account identity, config unchanged')
+		throw new Error('Twitch | Missing account identity | Config unchanged')
 	}
 
 	let existing
@@ -156,11 +156,11 @@ export async function generateToken(configPath: string, signal?: AbortSignal, lo
 		existing = {}
 	}
 
-	if (!existing || typeof existing !== 'object' || Array.isArray(existing)) throw new Error('Invalid config JSON, original file preserved')
+	if (!existing || typeof existing !== 'object' || Array.isArray(existing)) throw new Error('Config | Invalid JSON | Original file kept')
 	const existingId = String(('id' in existing ? existing.id : '') ?? '').trim()
 
 	if (/^\d+$/.test(existingId) && existingId !== user.id) {
-		throw new Error('Authorized account differs from config, sign in with the original account, config unchanged')
+		throw new Error('Config | Authorized account differs from config | Sign in with the original account')
 	}
 
 	const config = { ...existing, ...validateConfig({ id: user.id, login: user.login, client_id: clientId, token }) }
@@ -174,12 +174,12 @@ export async function generateToken(configPath: string, signal?: AbortSignal, lo
 	} catch (error) {
 		if (!(error instanceof Error)) throw error
 
-		throw new Error('Could not save config (' + error.code + '), original file preserved')
+		throw new Error('Config | Could not save (' + error.code + ') | Original file kept')
 	} finally {
 		await unlink(temp).catch(error => {
 			if (error.code !== 'ENOENT') throw error
 		})
 	}
 
-	log.success('Config saved for ' + config.login + ' | Start the collector')
+	log.success('Config saved | Account: ' + config.login + ' | Start the program to collect badges')
 }

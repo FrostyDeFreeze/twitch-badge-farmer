@@ -7,7 +7,7 @@ import { fetchJson } from './fetch.ts'
 import { Twitch } from './twitch.ts'
 import { Collector, nextWindowAt } from './collector.ts'
 import { loadState, saveState } from './state.ts'
-import { createLogger } from './logger.ts'
+import { createLogger, duration } from './logger.ts'
 import type { Task } from './types.ts'
 
 let log = createLogger()
@@ -35,7 +35,7 @@ function argumentsFor(args: string[]) {
 		} else if (['--help', '--list', '--gen-token'].includes(argument) && mode === 'start') {
 			mode = argument.slice(2)
 		} else {
-			throw new Error('Unknown argument or conflicting modes, use --help')
+			throw new Error('Unknown argument or conflicting modes | Use --help')
 		}
 	}
 
@@ -110,7 +110,7 @@ async function main() {
 		)
 
 		log.info(`Found ${tasks.length} available badge${tasks.length === 1 ? '' : 's'}`)
-		log.debug(`[CATALOG] Skipped records: ${skipped.length}`)
+		log.debug(`[CATALOG] Refreshed | Available: ${tasks.length} | Skipped: ${skipped.length}`)
 
 		for (const message of describeSkipped(skipped)) {
 			log.debug(message)
@@ -143,7 +143,7 @@ async function main() {
 
 	try {
 		log.info('Account: ' + config.login)
-		log.debug('[SYSTEM] Starting one active viewing session')
+		log.debug('[SYSTEM] State file | ' + statePath)
 
 		while (!controller.signal.aborted) {
 			let delay
@@ -162,8 +162,8 @@ async function main() {
 
 				delay = Math.max(Math.min(10_000 * 2 ** Math.min(failures - 1, 5), 300_000), error.retryAfterMs || 0)
 
-				log.warn(`Could not update badge collection | Retrying in ${Math.ceil(delay / 1000)}s`)
-				log.debug('[SYSTEM] ' + error.message)
+				log.warn(`Could not update badge data | Retrying in ${duration(delay)}`)
+				log.debug('[SYSTEM] Step failed | ' + error.message)
 			}
 
 			try {

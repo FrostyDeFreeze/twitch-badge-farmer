@@ -213,14 +213,14 @@ export function buildTasks(
 	campaigns: Campaign[] = []
 ) {
 	if (!data || typeof data !== 'object' || !('data' in data) || !Array.isArray(data.data))
-		throw new Error('StreamDatabase: unsupported response format')
+		throw new Error('StreamDatabase | Unsupported response format')
 
 	const tasks = new Map<string, Task>()
 	const skipped: SkippedBadge[] = []
 	const nameKeys = new Map<string, Set<string>>()
 
 	for (const event of data.data as CatalogEvent[]) {
-		if (!Array.isArray(event.twitch_global_badges)) throw new Error('StreamDatabase: missing badge list')
+		if (!Array.isArray(event.twitch_global_badges)) throw new Error('StreamDatabase | Missing badge list')
 
 		for (const badge of event.twitch_global_badges) {
 			const key = badgeKey(badge.current?.set_id, badge.current?.version?.id)
@@ -382,5 +382,5 @@ export function describeSkipped(skipped: SkippedBadge[]) {
 		badges.get(key)!.reasons.add(reason)
 	}
 
-	return [...badges].map(([key, badge]) => `[CATALOG] Skipped: ${key} | ${[...badge.reasons].join('; ')}`)
+	return [...badges].map(([key, badge]) => `[CATALOG] ${key} | ${badge.title} | Skipped: ${[...badge.reasons].join('; ')}`)
 }

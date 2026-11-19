@@ -182,8 +182,8 @@ Keep the program running so it comes back for later windows, or restart it to co
 
 **`Found 0 available badges`, or a badge is missing from the list.** Run the program with `--debug`. Each skipped badge is listed with its reason, such as `Already owned`, `Paid or unknown cost` or `Event has not started`.
 
-**`persisted query unavailable, update the utility`.** Twitch has changed its internal requests. Download the latest version of the program.
+**`Persisted query unavailable | Update the program`.** Twitch has changed its internal requests. Download the latest version of the program.
 
-**`authorization rejected, run with --gen-token`.** The token is no longer valid. Run `--gen-token` and sign in with the same account.
+**`Authorization rejected | Run with --gen-token`.** The token is no longer valid. Run `--gen-token` and sign in with the same account.
 
 **Progress does not increase.** Make sure only one instance is running and nobody is watching other streams on this account. If progress stalls for 5 minutes, the program switches to another channel on its own.

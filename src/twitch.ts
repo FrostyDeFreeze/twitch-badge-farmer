@@ -62,7 +62,7 @@ function cdnUrl(value: string, base: string | URL) {
 		(url.port && url.port !== '443') ||
 		!domains.some(domain => url.hostname === domain || url.hostname.endsWith('.' + domain))
 	) {
-		throw new Error('Twitch: unexpected URL in server response')
+		throw new Error('Twitch | Unexpected URL in response')
 	}
 
 	return url.href
@@ -75,7 +75,7 @@ function playlistLines(text: string) {
 		.map(line => line.trim())
 		.filter(Boolean)
 
-	if (lines[0] !== '#EXTM3U') throw new Error('Twitch: invalid HLS playlist')
+	if (lines[0] !== '#EXTM3U') throw new Error('HLS | Invalid playlist')
 
 	return lines
 }
@@ -101,7 +101,7 @@ export function chooseVariant(text: string, base: string | URL) {
 
 	variants.sort((left, right) => left.bandwidth - right.bandwidth)
 
-	if (!variants.length) throw new Error('Twitch: no video variant available')
+	if (!variants.length) throw new Error('HLS | No video variant')
 
 	return variants[0]!.url
 }
@@ -109,7 +109,7 @@ export function chooseVariant(text: string, base: string | URL) {
 export function playlistSegments(text: string, base: string | URL) {
 	const lines = playlistLines(text)
 
-	if (lines.includes('#EXT-X-ENDLIST')) throw new Error('Twitch: stream ended')
+	if (lines.includes('#EXT-X-ENDLIST')) throw new Error('HLS | Stream ended')
 
 	const segments = []
 
@@ -119,7 +119,7 @@ export function playlistSegments(text: string, base: string | URL) {
 		}
 	}
 
-	if (!segments.length) throw new Error('Twitch: no current HLS segments')
+	if (!segments.length) throw new Error('HLS | No current segments')
 
 	return [...new Set(segments)]
 }
@@ -170,25 +170,26 @@ export class Twitch {
 					(error.message || '') + ' ' + (error.extensions?.code || '')
 				)
 			)
-			const reason = /PersistedQueryNotFound/i.test(messages)
-				? 'persisted query unavailable, update the utility'
+			const outdated = /PersistedQueryNotFound/i.test(messages)
+			const reason = outdated
+				? 'Persisted query unavailable'
 				: /integrity/i.test(messages)
-					? 'integrity check rejected'
+					? 'Integrity check rejected'
 					: authRejected
-						? 'authorization rejected'
+						? 'Authorization rejected'
 						: /Cannot query field|Unknown argument/i.test(messages)
-							? 'query schema changed'
-							: 'request rejected'
+							? 'Query schema changed'
+							: 'Request rejected'
 			const code = result.errors.find(error => /^[A-Z][A-Z0-9_]{1,63}$/.test(error.extensions?.code || ''))?.extensions?.code
-			const error = new Error('GQL ' + operationName + ': ' + reason + (code ? ' (' + code + ')' : ''))
+			const action = outdated ? 'Update the program' : authRejected ? 'Run with --gen-token' : ''
+			const error = new Error(['GQL ' + operationName, reason + (code ? ' (' + code + ')' : ''), action].filter(Boolean).join(' | '))
 
 			error.fatal = authRejected || /integrity|PersistedQueryNotFound/i.test(messages)
-			if (authRejected) error.message += ', run with --gen-token'
 
 			throw error
 		}
 
-		if (!result.data) throw new Error('GQL ' + operationName + ': missing response data')
+		if (!result.data) throw new Error('GQL ' + operationName + ' | Missing response data')
 
 		return result.data
 	}
@@ -196,11 +197,11 @@ export class Twitch {
 	async globalBadges() {
 		const data = await this.gql('GlobalBadges', {}, 'query GlobalBadges { badges { setID version title user { id } } }')
 
-		if (!Array.isArray(data.badges)) throw new Error('GlobalBadges: missing badge list')
+		if (!Array.isArray(data.badges)) throw new Error('GQL GlobalBadges | Missing badge list')
 
 		const badges = data.badges.filter(badge => badge.user === null)
 
-		if (badges.some(badge => !badge.setID || badge.version == null || !badge.title)) throw new Error('GlobalBadges: invalid badge metadata')
+		if (badges.some(badge => !badge.setID || badge.version == null || !badge.title)) throw new Error('GQL GlobalBadges | Invalid badge metadata')
 
 		return new Map(badges.map(badge => [badge.setID + ':' + badge.version, badge]))
 	}
@@ -221,7 +222,7 @@ export class Twitch {
 
 		const badges = data.channelViewer?.earnedBadges
 
-		if (!Array.isArray(badges)) throw new Error('ViewerCard: missing earned badge list')
+		if (!Array.isArray(badges)) throw new Error('GQL ViewerCard | Missing earned badge list')
 
 		return new Set(badges.map(badge => badge.setID + ':' + badge.version))
 	}
@@ -248,7 +249,7 @@ export class Twitch {
 					label: 'Helix streams'
 				})
 
-				if (!Array.isArray(data.data)) throw new Error('Helix: unsupported stream list format')
+				if (!Array.isArray(data.data)) throw new Error('Helix streams | Unsupported response format')
 
 				for (const stream of data.data) {
 					if (stream.type !== 'live' || !stream.id || !stream.user_id || !stream.user_login) continue
@@ -300,7 +301,7 @@ export class Twitch {
 			const campaigns = data.channel?.viewerDropCampaigns
 
 			if (data.channel === null || campaigns === null) continue
-			if (!Array.isArray(campaigns)) throw new Error('Twitch Drops: campaign list unavailable for ' + stream.user_login)
+			if (!Array.isArray(campaigns)) throw new Error('Twitch Drops | Campaign list unavailable | ' + stream.user_login)
 
 			const matches = campaigns.flatMap(campaign =>
 				(campaign.game && campaign.game.id !== stream.game_id && !SPECIAL_EVENTS.includes(campaign.game.id)) ||
@@ -334,7 +335,7 @@ export class Twitch {
 
 		const campaigns = data.channelDropCampaignsProgress
 
-		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Twitch: daily channel rewards unavailable')
+		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Twitch | Daily channel rewards unavailable')
 
 		for (const [id, entry] of this.channelRewards) if (entry.expiresAt <= now) this.channelRewards.delete(id)
 
@@ -345,7 +346,7 @@ export class Twitch {
 
 	async selectTrack(group: RewardGroup) {
 		if (!group.track && !group.lane) return
-		if (!group.track || !group.lane) throw new Error('Twitch: incomplete progression track')
+		if (!group.track || !group.lane) throw new Error('Twitch | Incomplete progression track')
 
 		const { track, lane } = group
 
@@ -356,7 +357,7 @@ export class Twitch {
 				'query ProgressionTrackSelections($tracks: [ID!]!) { trackSelections(tracks: $tracks) { track lane } }'
 			)
 
-			if (!Array.isArray(data.trackSelections)) throw new Error('Twitch: missing progression selection')
+			if (!Array.isArray(data.trackSelections)) throw new Error('Twitch | Missing progression selection')
 
 			return data.trackSelections.find(selection => selection.track === track)?.lane
 		}
@@ -365,7 +366,7 @@ export class Twitch {
 
 		if (selected !== lane) {
 			if (this.selectedTracks.has(track) && selected !== this.selectedTracks.get(track))
-				throw new Error('Twitch: progression selection changed outside the collector')
+				throw new Error('Twitch | Progression selection changed outside the program')
 
 			const data = await this.gql(
 				'SetProgressionTrackSelection',
@@ -373,8 +374,8 @@ export class Twitch {
 				'mutation SetProgressionTrackSelection($input: SetTrackSelectionInput!) { setTrackSelection(input: $input) { error } }'
 			)
 
-			if (!data.setTrackSelection || data.setTrackSelection.error !== null) throw new Error('Twitch: progression selection rejected')
-			if ((await read()) !== lane) throw new Error('Twitch: progression selection was not confirmed')
+			if (!data.setTrackSelection || data.setTrackSelection.error !== null) throw new Error('Twitch | Progression selection rejected')
+			if ((await read()) !== lane) throw new Error('Twitch | Progression selection not confirmed')
 		}
 
 		this.selectedTracks.set(track, lane)
@@ -389,11 +390,11 @@ export class Twitch {
    }`
 		)
 
-		if (data.currentUser?.id !== this.config.id) throw new Error('Inventory: missing or mismatched account identity')
+		if (data.currentUser?.id !== this.config.id) throw new Error('Inventory | Missing or mismatched account identity')
 
 		const campaigns = data.currentUser.inventory?.viewerRewardDropCampaignsInProgress
 
-		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Inventory: missing daily reward campaigns')
+		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Inventory | Missing daily reward campaigns')
 
 		if (
 			campaigns?.some(
@@ -405,7 +406,7 @@ export class Twitch {
 					campaign.rewardGroups.some(group => !group || typeof group.id !== 'string' || !group.id || !Array.isArray(group.rewards))
 			)
 		) {
-			throw new Error('Inventory: invalid daily reward campaigns')
+			throw new Error('Inventory | Invalid daily reward campaigns')
 		}
 
 		return campaigns ?? []
@@ -418,14 +419,14 @@ export class Twitch {
 				if (!(error instanceof Error) || error.fatal || this.signal?.aborted) throw error
 
 				// the daily query is unpersisted and private, so a schema change must not stop ordinary Drops
-				this.log.debug('[TWITCH] Daily rewards unavailable: ' + error.message)
+				this.log.debug('[TWITCH] Daily rewards unavailable | ' + error.message)
 
 				return []
 			})
 		])
 
 		if (data.currentUser === null) {
-			const error = new Error('Inventory: authorization rejected, run with --gen-token')
+			const error = new Error('Inventory | Authorization rejected | Run with --gen-token')
 
 			error.fatal = true
 
@@ -434,7 +435,7 @@ export class Twitch {
 
 		const campaigns = data.currentUser?.inventory?.dropCampaignsInProgress
 
-		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Inventory: missing Drops campaigns')
+		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Inventory | Missing Drops campaigns')
 
 		return [...(campaigns ?? []), ...daily]
 	}
@@ -456,7 +457,7 @@ export class Twitch {
 		if (!item?.self) return null
 
 		if (!Number.isFinite(item.self.currentMinutesWatched) || !(item.requiredMinutesWatched > 0)) {
-			throw new Error('Inventory: invalid Drops progress')
+			throw new Error('Inventory | Invalid Drops progress')
 		}
 
 		return { ...item.self, requiredMinutesWatched: item.requiredMinutesWatched }
@@ -477,7 +478,7 @@ export class Twitch {
 				})
 				const access = data.streamPlaybackAccessToken
 
-				if (!access?.signature || !access?.value) throw new Error('GQL: playback access token missing')
+				if (!access?.signature || !access?.value) throw new Error('GQL PlaybackAccessToken | Token missing')
 
 				const masterUrl = new URL('https://usher.ttvnw.net/api/channel/hls/' + stream.user_login + '.m3u8')
 
@@ -509,7 +510,7 @@ export class Twitch {
 					label: 'HLS segment ' + (index + 1) + '/' + segments.length
 				})
 
-				if (![200, 206].includes(response.status)) throw new Error('Twitch: segment unavailable')
+				if (![200, 206].includes(response.status)) throw new Error('HLS | Segment unavailable')
 			}
 		} catch (error) {
 			if (!(error instanceof Error)) throw error

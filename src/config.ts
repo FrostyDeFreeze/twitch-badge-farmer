@@ -10,7 +10,7 @@ export async function readConfig(path: string | URL): Promise<unknown> {
 		if (!(cause instanceof Error)) throw cause
 
 		const error = new Error(
-			cause.code === 'ENOENT' ? 'Config not found, run with --gen-token' : 'Could not read config JSON (' + cause.code + ')'
+			cause.code === 'ENOENT' ? 'Config | Not found | Run with --gen-token' : 'Config | Could not read (' + cause.code + ')'
 		)
 
 		error.code = cause.code
@@ -21,7 +21,7 @@ export async function readConfig(path: string | URL): Promise<unknown> {
 	try {
 		return JSON.parse(text.replace(/^\uFEFF/, ''))
 	} catch {
-		throw new Error('Invalid config JSON')
+		throw new Error('Config | Invalid JSON')
 	}
 }
 
@@ -38,7 +38,7 @@ export function validateConfig(input: unknown): Config {
 	config.token = config.token.replace(/^oauth:/i, '').trim()
 
 	if (Object.values(config).some(value => !value) || config.token === 'your_oauth_token') {
-		throw new Error('Config requires id, login, client_id and token, run with --gen-token')
+		throw new Error('Config | Requires id, login, client_id and token | Run with --gen-token')
 	}
 
 	return config

@@ -182,8 +182,8 @@ bun run gen-token
 
 **`Found 0 available badges` или нужного бейджа нет в списке.** Запусти программу с `--debug`: для каждого пропущенного бейджа будет указана причина, например `Already owned`, `Paid or unknown cost` или `Event has not started`.
 
-**`persisted query unavailable, update the utility`.** Twitch изменил внутренние запросы. Скачай последнюю версию программы.
+**`Persisted query unavailable | Update the program`.** Twitch изменил внутренние запросы. Скачай последнюю версию программы.
 
-**`authorization rejected, run with --gen-token`.** Токен больше не действует. Выполни `--gen-token` и войди в ту же учётную запись.
+**`Authorization rejected | Run with --gen-token`.** Токен больше не действует. Выполни `--gen-token` и войди в ту же учётную запись.
 
 **Прогресс не растёт.** Проверь, что программа запущена в одном экземпляре и что с этой учётной записи никто не смотрит другие трансляции. Если прогресс стоит 5 минут, программа сама переключается на другой канал.

@@ -49,7 +49,7 @@ export function dailyProgress(group: RewardGroup, key: string, now = Date.now())
 	const watched = self.currentMinutesWatched ?? (self.currentWindow ? NaN : 0)
 
 	if (!Number.isFinite(watched) || watched < 0 || !Number.isSafeInteger(self.grantCount) || self.grantCount < 0 || self.grantCount > repeatable) {
-		throw new Error('Twitch: invalid daily reward counters')
+		throw new Error('Twitch | Invalid daily reward counters')
 	}
 
 	const timestamp = (value: string | null | undefined) => {
@@ -57,7 +57,7 @@ export function dailyProgress(group: RewardGroup, key: string, now = Date.now())
 
 		const time = Date.parse(value)
 
-		if (!Number.isFinite(time)) throw new Error('Twitch: invalid daily reward window')
+		if (!Number.isFinite(time)) throw new Error('Twitch | Invalid daily reward window')
 
 		return time
 	}
@@ -67,7 +67,7 @@ export function dailyProgress(group: RewardGroup, key: string, now = Date.now())
 	const nextEligibleAt = timestamp(self.nextEligibleAt)
 
 	if (self.currentWindow && (windowStartedAt === null || windowEndsAt === null || windowStartedAt >= windowEndsAt))
-		throw new Error('Twitch: invalid daily reward window')
+		throw new Error('Twitch | Invalid daily reward window')
 
 	return {
 		// minutes outside an open window belong to a finished day
