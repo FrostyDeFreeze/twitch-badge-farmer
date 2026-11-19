@@ -1,22 +1,11 @@
-import type {
-	Attempt,
-	AttemptStatus,
-	Campaign,
-	CollectorState,
-	Config,
-	DropProgress,
-	DropReference,
-	GlobalBadge,
-	SelectedStream,
-	Task
-} from './types.ts'
+import type { Attempt, AttemptStatus, Campaign, CollectorState, Config, DropReference, GlobalBadge, SelectedStream, Task } from './types.ts'
 import type { Twitch } from './twitch.ts'
 import { createLogger, type Logger } from './logger.ts'
 
 interface CollectorOptions {
 	config: Config
 	signal?: AbortSignal | undefined
-	twitch: Pick<Twitch, 'globalBadges' | 'badges' | 'inventory' | 'selectStream' | 'dropProgress' | 'claimDrop' | 'watch' | 'playback'>
+	twitch: Pick<Twitch, 'globalBadges' | 'badges' | 'inventory' | 'selectStream' | 'dropProgress' | 'watch' | 'playback'>
 	state: CollectorState
 	save: (state: CollectorState) => Promise<void>
 	log?: Logger
@@ -54,18 +43,26 @@ function dailyWindow(task: Task, now: number) {
 	])
 }
 
-function dailyWait(task: Task, now: number, attempt?: Attempt) {
+// when the next daily window opens, or null when the task can be viewed now
+export function nextWindowAt(task: Task, now: number, attempt?: Attempt) {
 	const daily = task.daily
 
 	// a group without inventory progress is looked up on eligible channels
-	if (!task.days || !daily) return 0
-	if (daily.completedDays >= daily.requiredDays || ['CLAIMED', 'FULFILLED'].includes(daily.status)) return 0
-	if (daily.windowStartedAt !== null && daily.windowStartedAt > now) return daily.windowStartedAt - now
-	if (daily.nextEligibleAt !== null && daily.nextEligibleAt > now) return daily.nextEligibleAt - now
-	if (attempt?.dailyCompletedWindow === dailyWindow(task, now) || (task.serverMinutes ?? 0) >= task.minutes)
-		return Math.max(60000, (daily.windowEndsAt ?? now) - now)
+	if (!task.days || !daily) return null
+	if (daily.completedDays >= daily.requiredDays || ['CLAIMED', 'FULFILLED'].includes(daily.status)) return null
+	if (daily.windowStartedAt !== null && daily.windowStartedAt > now) return daily.windowStartedAt
+	if (daily.nextEligibleAt !== null && daily.nextEligibleAt > now) return daily.nextEligibleAt
+	// a completed portion is remembered only for a known window, otherwise nothing could end the wait
+	if ((daily.windowEndsAt !== null && attempt?.dailyCompletedWindow === dailyWindow(task, now)) || (task.serverMinutes ?? 0) >= task.minutes)
+		return Math.max(now + 60000, daily.windowEndsAt ?? now)
 
-	return 0
+	return null
+}
+
+function dailyWait(task: Task, now: number, attempt?: Attempt) {
+	const at = nextWindowAt(task, now, attempt)
+
+	return at === null ? 0 : at - now
 }
 
 export const WATCH_INTERVAL = 20_000
@@ -76,16 +73,33 @@ const CATALOG_INTERVAL = 900_000
 const RETRY_INTERVAL = 900_000
 const CONFIRMATION_GRACE = 300_000
 const STALL_INTERVAL = 300_000
+const DAY = 86_400_000
 
-// an ordinary attempt cannot finish when the event ends before the unwatched minutes and their confirmation
-function feasible(task: Task, now: number) {
-	return !!task.days || now + Math.max(0, task.minutes - (task.serverMinutes || 0)) * 60_000 + CONFIRMATION_GRACE <= task.endAt
+// an attempt cannot finish when the event ends before its unwatched minutes, remaining days and confirmation
+function feasible(task: Task, now: number, attempt?: Attempt) {
+	const left = (watched = 0) => Math.max(0, task.minutes - watched) * 60_000
+
+	if (!task.days) return now + left(task.serverMinutes) + CONFIRMATION_GRACE <= task.endAt
+
+	const remaining = task.days - (task.daily?.completedDays ?? 0)
+
+	if (remaining <= 0) return true
+
+	const wait = dailyWait(task, now, attempt)
+	const start = now + wait
+	const windowEndsAt = task.daily?.windowEndsAt ?? null
+	// every day needs its own 24-hour window, the next one opens when the current one ends
+	const nextWindow = !wait && windowEndsAt !== null && windowEndsAt > now ? windowEndsAt : start + DAY
+	const finish = remaining > 1 ? nextWindow + (remaining - 2) * DAY + left() : start + left(wait ? 0 : task.serverMinutes)
+
+	return finish + CONFIRMATION_GRACE <= task.endAt
 }
 
 function conditionSignature(task: Task, drop: DropReference | null | undefined = task.drop) {
 	return JSON.stringify([
 		task.availabilityId,
-		task.minutes,
+		// Twitch's minutes found after the first viewed minutes refine the same conditions, not new ones
+		task.catalogMinutes ?? task.minutes,
 		task.days,
 		task.days ? (drop ?? null) : null,
 		task.startAt,
@@ -127,7 +141,7 @@ export class Collector {
 		this.catalog = null
 		this.globals = new Map()
 		this.dropCampaigns = []
-		this.owned = new Set(state.confirmed)
+		this.owned = new Set()
 
 		this.active = null
 	}
@@ -165,7 +179,7 @@ export class Collector {
 			try {
 				const owned = await this.twitch.badges()
 
-				this.owned = new Set([...this.state.confirmed, ...owned])
+				this.owned = owned
 				this.inventoryReady = true
 			} catch (error) {
 				if (!(error instanceof Error)) throw error
@@ -222,30 +236,6 @@ export class Collector {
 		}
 	}
 
-	async claimReadyDrop(progress: DropProgress | null) {
-		if (!progress || progress.isClaimed || !progress.dropInstanceID) return false
-
-		const ready = progress.daily
-			? progress.daily.status === 'CLAIMABLE' && progress.daily.completedDays >= progress.daily.requiredDays
-			: progress.currentMinutesWatched >= progress.requiredMinutesWatched
-		const attempt = this.state.attempts[this.active!.task.key]!
-
-		if (!ready || attempt.claimedInstance === progress.dropInstanceID) return false
-
-		await this.twitch.claimDrop(progress.dropInstanceID)
-
-		attempt.claimedInstance = progress.dropInstanceID
-		attempt.claimPendingAt = this.now()
-
-		this.log.info(this.active!.task.title + ' | Drop claimed, waiting for badge confirmation')
-		this.log.debug('[REWARD] Drop claimed: ' + this.active!.task.key)
-
-		this.nextInventory = 0
-		this.nextDropsInventory = 0
-
-		return true
-	}
-
 	async finish(status: AttemptStatus, now: number, deferMs = 0) {
 		const { task } = this.active!
 		const attempt = this.state.attempts[task.key]!
@@ -254,7 +244,7 @@ export class Collector {
 		attempt.deferUntil = now + deferMs
 
 		if (status === 'earned') {
-			this.state.confirmed = [...new Set([...this.state.confirmed, task.key])]
+			delete this.state.attempts[task.key]
 			this.log.success('Badge earned: ' + task.title)
 			this.log.debug('[REWARD] Ownership confirmed: ' + task.key)
 		} else {
@@ -300,7 +290,7 @@ export class Collector {
 
 		await this.campaigns()
 
-		const progress = await this.twitch.dropProgress(active.drop, this.dropCampaigns, this.now())
+		const progress = await this.twitch.dropProgress(active.drop, active.task.key, this.dropCampaigns, this.now())
 
 		if (!progress?.daily) {
 			// Twitch lists a channel-discovered group in the inventory only after its first minutes
@@ -339,8 +329,6 @@ export class Collector {
 			active.progressMinutes = null
 		}
 
-		attempt.serverMinutes = progress.currentMinutesWatched
-
 		if (progress.currentMinutesWatched !== active.progressMinutes) active.stalledMs = 0
 		active.progressMinutes = progress.currentMinutesWatched
 
@@ -351,12 +339,11 @@ export class Collector {
 		active.progressMessage = message
 		active.nextProgress = this.now() + 60000
 
+		// Twitch grants the badge itself once the days are complete
 		if (progress.isClaimed || daily.completedDays >= daily.requiredDays) {
-			await this.claimReadyDrop(progress)
+			attempt.completedAt ??= this.now()
 
-			attempt.claimPendingAt ??= this.now()
-
-			if (this.now() - attempt.claimPendingAt >= CONFIRMATION_GRACE) {
+			if (this.now() - attempt.completedAt >= CONFIRMATION_GRACE) {
 				await this.finish('unconfirmed', this.now(), RETRY_INTERVAL)
 
 				return 0
@@ -409,6 +396,11 @@ export class Collector {
 
 		const { tasks } = buildTasks(this.catalog, this.owned, now, this.globals, this.dropCampaigns)
 
+		// Twitch remains the source of truth, so attempts of earned, expired or vanished badges are dropped
+		for (const key of Object.keys(this.state.attempts)) {
+			if (key !== this.active?.task.key && !tasks.some(task => task.key === key)) delete this.state.attempts[key]
+		}
+
 		if (this.active) {
 			const task = tasks.find(task => task.key === this.active!.task.key)
 
@@ -444,10 +436,14 @@ export class Collector {
 				this.log.debug('[VIEWING] Requirements changed: ' + task.key)
 			}
 
-			if (!feasible(task, now)) {
+			if (!feasible(task, now, this.state.attempts[task.key])) {
 				await this.finish('expired-or-unavailable', now)
 
 				return 0
+			}
+
+			if (task.minutes !== this.active.task.minutes && task.catalogMinutes !== undefined) {
+				this.log.info(`${task.title} | Twitch requires ${task.minutes} min, the catalog lists ${task.catalogMinutes}`)
 			}
 
 			this.active.task = task
@@ -458,33 +454,44 @@ export class Collector {
 				const attempt = this.state.attempts[task.key]
 				const deferred = attempt?.status === 'waiting-day' || attempt?.status === 'waiting-progress' ? 0 : attempt?.deferUntil || 0
 
-				return deferred <= now && dailyWait(task, now, attempt) === 0 && feasible(task, now)
+				return deferred <= now && dailyWait(task, now, attempt) === 0 && feasible(task, now, attempt)
 			})
 
+			const first = available[0]
 			const resumed = available.find(task => task.key === this.state.active)
-			const task = resumed && (resumed.serverMinutes || !available[0]?.serverMinutes) ? resumed : available[0]
+			// a badge sharing the first one's group gains nothing from resuming, the first is earned sooner
+			const sameGroup = resumed?.drop && JSON.stringify(resumed.drop) === JSON.stringify(first?.drop)
+			const task = resumed && !sameGroup && (resumed.serverMinutes || !first?.serverMinutes) ? resumed : first
 
 			if (!task) {
+				const windows = tasks.flatMap(task => nextWindowAt(task, now, this.state.attempts[task.key]) ?? [])
+
+				if (windows.length) {
+					const next = new Date(Math.min(...windows))
+					const time = [next.getHours(), next.getMinutes()].map(value => String(value).padStart(2, '0')).join(':')
+
+					// wake when the window opens, not up to an idle interval later
+					return this.idle('Waiting for the next daily window | Opens at ' + time, Math.min(IDLE_INTERVAL, next.getTime() - now))
+				}
+
 				return this.idle(
-					(tasks.some(task => task.days && dailyWait(task, now, this.state.attempts[task.key]))
-						? 'Waiting for the next daily window or Twitch progress'
-						: tasks.some(task => feasible(task, now))
-							? 'No eligible live streams'
-							: tasks.length
-								? 'Not enough time left to finish available badges'
-								: 'No unearned badges available') + ` | Checking again in ${IDLE_INTERVAL / 60_000} min`,
+					(tasks.some(task => feasible(task, now, this.state.attempts[task.key]))
+						? 'No eligible live streams'
+						: tasks.length
+							? 'Not enough time left to finish available badges'
+							: 'No unearned badges available') + ` | Checking again in ${IDLE_INTERVAL / 60_000} min`,
 					IDLE_INTERVAL
 				)
 			}
 
 			this.idleMessage = ''
 
-			const attempt: Attempt = this.state.attempts[task.key] ?? { attemptedMs: 0, deferUntil: 0, status: 'pending' }
+			const attempt: Attempt = this.state.attempts[task.key] ?? { attemptedMs: 0, deferUntil: 0, status: 'watching' }
 			const signature = conditionSignature(task)
 
 			if (attempt.signature !== signature || ['unconfirmed', 'error'].includes(attempt.status)) {
 				attempt.attemptedMs = 0
-				delete attempt.claimPendingAt
+				delete attempt.completedAt
 			}
 
 			attempt.signature = signature
@@ -508,7 +515,10 @@ export class Collector {
 				progressMessage: ''
 			}
 
-			this.log.info(`Selected badge: ${task.title} | Required viewing: ${task.minutes} min${task.days ? '/day × ' + task.days + ' days' : ''}`)
+			this.log.info(
+				`Selected badge: ${task.title} | Required viewing: ${task.minutes} min${(task.days ?? 1) > 1 ? '/day × ' + task.days + ' days' : ''}` +
+					(task.catalogMinutes === undefined ? '' : ` (Twitch; the catalog lists ${task.catalogMinutes} min)`)
+			)
 			this.log.debug(`[VIEWING] Task: ${task.key}${task.serverMinutes ? ', already watched ' + task.serverMinutes + ' min' : ''}`)
 
 			await this.persist()
@@ -524,23 +534,6 @@ export class Collector {
 				const delay = await this.dailyStep(now)
 
 				if (delay !== undefined) return delay
-			}
-
-			if (!active.task.days && active.task.drop && (active.task.serverMinutes || 0) >= active.task.minutes && now >= active.nextProgress) {
-				await this.campaigns()
-
-				const progress = await this.twitch.dropProgress(active.task.drop, this.dropCampaigns, this.now())
-
-				if (progress && (await this.claimReadyDrop(progress))) {
-					attempt.serverMinutes = progress.currentMinutesWatched
-					active.lastGoodAt = null
-					active.nextProgress = this.now() + 60_000
-					active.failures = 0
-
-					await this.persist()
-
-					return WATCH_INTERVAL
-				}
 			}
 
 			if (attempt.attemptedMs >= active.task.minutes * 60_000 + CONFIRMATION_GRACE) {
@@ -624,17 +617,14 @@ export class Collector {
 			if (!active.task.days && now >= active.nextProgress) {
 				await this.campaigns()
 
-				const progress = await this.twitch.dropProgress(active.drop!, this.dropCampaigns, this.now())
+				const progress = await this.twitch.dropProgress(active.drop!, active.task.key, this.dropCampaigns, this.now())
 				let message
 
 				if (progress) {
-					attempt.serverMinutes = progress.currentMinutesWatched
 					if (progress.currentMinutesWatched !== active.progressMinutes) active.stalledMs = 0
 					active.progressMinutes = progress.currentMinutesWatched
 
 					message = `${active.task.title} | Twitch progress: ${progress.currentMinutesWatched}/${progress.requiredMinutesWatched} min`
-
-					await this.claimReadyDrop(progress)
 
 					if (progress.isClaimed) active.stalledMs = 0
 				} else {

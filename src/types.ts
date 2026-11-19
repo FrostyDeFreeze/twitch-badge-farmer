@@ -22,6 +22,8 @@ export interface Task {
 	rewardNames: string[]
 	availabilityId?: string | number | undefined
 	minutes: number
+	// the catalog's minutes when Twitch's matched reward asks for a different count, which then is `minutes`
+	catalogMinutes?: number
 	days?: number
 	daily?: DailyProgress
 	startAt: number
@@ -43,7 +45,6 @@ export interface GlobalBadge {
 export interface DropSelf {
 	currentMinutesWatched: number
 	isClaimed?: boolean
-	dropInstanceID?: string | null
 	hasPreconditionsMet?: boolean
 }
 
@@ -94,7 +95,12 @@ export interface RewardGroup {
 		hasPreconditionsMet?: boolean
 		earnedReward?: { id: string } | null
 	} | null
-	rewards?: { distributionType?: string; dropDetail?: { badge?: { setID?: string; version?: string | number } | null } | null; pool?: unknown }[]
+	rewards?: (DropsReward & { pool?: { rewards?: DropsReward[] | null } | null })[]
+}
+
+export interface DropsReward {
+	distributionType?: string
+	dropDetail?: { badge?: { setID?: string; version?: string | number } | null } | null
 }
 
 export interface DropProgress extends DropSelf {
@@ -117,7 +123,7 @@ export interface SelectedStream extends Stream {
 }
 
 export type AttemptStatus =
-	'pending' | 'watching' | 'earned' | 'waiting' | 'waiting-day' | 'waiting-progress' | 'unconfirmed' | 'error' | 'expired-or-unavailable'
+	'watching' | 'earned' | 'waiting' | 'waiting-day' | 'waiting-progress' | 'unconfirmed' | 'error' | 'expired-or-unavailable'
 
 export interface Attempt {
 	attemptedMs: number
@@ -127,17 +133,14 @@ export interface Attempt {
 	dailyWindow?: string
 	dailyCompletedDays?: number
 	dailyCompletedWindow?: string
-	claimedInstance?: string
-	claimPendingAt?: number
-	serverMinutes?: number
+	completedAt?: number
 }
 
 export interface CollectorState {
-	version: 1
+	version: 2
 	id: string
-	confirmed: string[]
-	attempts: Record<string, Attempt>
 	active: string | null
+	attempts: Record<string, Attempt>
 }
 
 declare global {

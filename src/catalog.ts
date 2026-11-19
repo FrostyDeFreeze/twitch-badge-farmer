@@ -1,5 +1,5 @@
 import type { Campaign, Drop, DropProgress, GlobalBadge, Task } from './types.ts'
-import { dailyProgress, matchesReward, rewardBadgeKey } from './rewards.ts'
+import { dailyProgress, matchesReward, rewardBadges } from './rewards.ts'
 
 interface Dates {
 	start_at_date?: string
@@ -85,7 +85,7 @@ function normalizeName(name: string) {
 function watchRequirement(objectives: Objective[][] | null | undefined, owned: Set<string>, progress: DropProgress | undefined, now: number) {
 	if (!Array.isArray(objectives) || !objectives.length) throw new Error('Missing structured objectives')
 
-	const watches: { minutes: number; days: number }[] = []
+	const watches: { minutes: number; days: number; daily: boolean }[] = []
 	let prerequisite = false
 
 	for (const group of objectives) {
@@ -129,7 +129,7 @@ function watchRequirement(objectives: Objective[][] | null | undefined, owned: S
 			if (now >= deadline && (progress?.daily?.completedDays ?? 0) < completed) throw new Error('Viewing stage expired')
 		}
 
-		watches.push({ minutes: watch.minutes, days: watch.days ?? 1 })
+		watches.push({ minutes: watch.minutes, days: watch.days ?? 1, daily: watch.days != null })
 	}
 
 	if (!watches.length || (watches.length > 1 && !progress?.daily)) throw new Error('Ambiguous viewing objectives')
@@ -143,7 +143,8 @@ function watchRequirement(objectives: Objective[][] | null | undefined, owned: S
 	)
 		throw new Error('Unsupported staged viewing objectives')
 
-	return { minutes, days, prerequisite }
+	// an explicit day count, even a single day, is earned through a daily reward group
+	return { minutes, days, daily: watches.some(watch => watch.daily), prerequisite }
 }
 
 function restrictions(availability: Availability) {
@@ -171,12 +172,16 @@ function restrictions(availability: Availability) {
 	}
 }
 
+// a campaign filed under Special Events counts on any game; the catalog categories still choose the streams
+export const SPECIAL_EVENTS = ['509663', '509672']
+
 export function matchesDrop(task: Task, campaign: Campaign, drop: Drop, now = Date.now()) {
 	return (
 		(!campaign.startAt || Date.parse(campaign.startAt) <= now) &&
 		(!campaign.endAt || Date.parse(campaign.endAt) > now) &&
-		(!campaign.game || !task.categoryIds.length || task.categoryIds.includes(campaign.game.id)) &&
-		drop.requiredMinutesWatched === task.minutes &&
+		(!campaign.game || !task.categoryIds.length || task.categoryIds.includes(campaign.game.id) || SPECIAL_EVENTS.includes(campaign.game.id)) &&
+		// minutes are compared by dropCandidates, so a wrong catalog count does not hide the reward
+		drop.requiredMinutesWatched > 0 &&
 		!drop.requiredSubs &&
 		!drop.requiredTurboSubs &&
 		drop.self?.hasPreconditionsMet !== false &&
@@ -184,6 +189,20 @@ export function matchesDrop(task: Task, campaign: Campaign, drop: Drop, now = Da
 		Date.parse(drop.endAt) > now &&
 		drop.benefitEdges?.some(edge => typeof edge.benefit?.name === 'string' && task.rewardNames.includes(normalizeName(edge.benefit.name)))
 	)
+}
+
+// Drops with the catalog's minutes decide between several matches; a single match is trusted with Twitch's minutes
+export function dropCandidates<T extends { drop: Drop }>(task: Task, matches: T[]) {
+	const exact = matches.filter(match => match.drop.requiredMinutesWatched === task.minutes)
+
+	return exact.length || matches.length !== 1 ? exact : matches
+}
+
+function useTwitchMinutes(task: Task, minutes: number) {
+	if (minutes === task.minutes) return
+
+	task.catalogMinutes = task.minutes
+	task.minutes = minutes
 }
 
 export function buildTasks(
@@ -236,20 +255,18 @@ export function buildTasks(
 
 					if (now < startAt) throw new Error('Event has not started')
 
-					const rewards = campaigns.flatMap(campaign =>
-						(campaign.rewardGroups ?? [])
-							.filter(
-								group =>
-									rewardBadgeKey(group) === key &&
-									(!campaign.startAt || Date.parse(campaign.startAt) <= now) &&
-									(!campaign.endAt || Date.parse(campaign.endAt) > now)
-							)
-							.flatMap(group => {
-								const progress = dailyProgress(group, now)
+					const rewards = campaigns
+						.filter(
+							campaign =>
+								(!campaign.startAt || Date.parse(campaign.startAt) <= now) && (!campaign.endAt || Date.parse(campaign.endAt) > now)
+						)
+						.flatMap(campaign =>
+							(campaign.rewardGroups ?? []).flatMap(group => {
+								const progress = dailyProgress(group, key, now)
 
 								return progress ? [{ campaign, group, progress }] : []
 							})
-					)
+						)
 
 					const reward = rewards.length === 1 ? rewards[0] : undefined
 					const paid = availability.cost === 'paid'
@@ -263,17 +280,17 @@ export function buildTasks(
 						throw error
 					}
 
-					const { minutes, days, prerequisite } = requirement
+					const { minutes, days, daily, prerequisite } = requirement
 
 					// an owned prerequisite unlocks a paid evolution; an acquired container must already show on Twitch
-					if (paid && !(days > 1 && (prerequisite || (reward && availability.objectives?.some(subscriptionOnly)))))
+					if (paid && !(daily && (prerequisite || (reward && availability.objectives?.some(subscriptionOnly)))))
 						throw new Error('Paid or unknown cost')
-					if (days > 1 && rewards.length > 1) throw new Error('Ambiguous daily reward')
+					if (daily && rewards.length > 1) throw new Error('Ambiguous daily reward')
 					// a listed group without usable progress means Twitch rejects it, such as for unmet prerequisites
 					if (
-						days > 1 &&
+						daily &&
 						!rewards.length &&
-						campaigns.some(campaign => campaign.rewardGroups?.some(group => rewardBadgeKey(group) === key))
+						campaigns.some(campaign => campaign.rewardGroups?.some(group => rewardBadges(group).includes(key)))
 					)
 						throw new Error('Daily reward unavailable on Twitch')
 
@@ -283,27 +300,26 @@ export function buildTasks(
 						rewardNames: names,
 						availabilityId: availability._id,
 						minutes,
-						...(days > 1 ? { days } : {}),
+						...(daily ? { days } : {}),
 						startAt,
 						endAt,
 						...restrictions(availability)
 					}
 
-					if (days > 1 && reward) {
+					if (daily && reward) {
 						if (!matchesReward(task, reward.campaign, reward.group, now)) throw new Error('Daily reward requirements do not match')
 
 						task.drop = { id: reward.group.id, campaignId: reward.campaign.id, kind: 'reward-group' }
 						task.serverMinutes = reward.progress.currentMinutesWatched
 						task.daily = reward.progress.daily!
+						useTwitchMinutes(task, reward.progress.requiredMinutesWatched)
 					}
 
 					const previous = tasks.get(key)
+					// availabilities are compared by the catalog's own numbers
+					const total = previous ? (previous.catalogMinutes ?? previous.minutes) * (previous.days ?? 1) : Infinity
 
-					if (
-						!previous ||
-						minutes * days < previous.minutes * (previous.days ?? 1) ||
-						(minutes * days === previous.minutes * (previous.days ?? 1) && endAt < previous.endAt)
-					) {
+					if (minutes * days < total || (minutes * days === total && endAt < previous!.endAt)) {
 						tasks.set(key, task)
 					}
 				} catch (error) {
@@ -330,14 +346,16 @@ export function buildTasks(
 						Number.isFinite(drop.self?.currentMinutesWatched) &&
 						drop.self!.currentMinutesWatched > 0
 				)
-				.map(drop => ({ campaignId: campaign.id, id: drop.id, minutes: drop.self!.currentMinutesWatched }))
+				.map(drop => ({ campaignId: campaign.id, drop }))
 		)
+		const picked = dropCandidates(task, matches)
 
-		if (matches.length === 1) {
-			const { campaignId, id, minutes } = matches[0]!
+		if (picked.length === 1) {
+			const { campaignId, drop } = picked[0]!
 
-			task.drop = { campaignId, id }
-			task.serverMinutes = minutes
+			task.drop = { campaignId, id: drop.id }
+			task.serverMinutes = drop.self!.currentMinutesWatched
+			useTwitchMinutes(task, drop.requiredMinutesWatched)
 		}
 	}
 
@@ -346,6 +364,8 @@ export function buildTasks(
 			(a, b) =>
 				Number(Boolean(b.serverMinutes)) - Number(Boolean(a.serverMinutes)) ||
 				Math.max(0, a.minutes - (a.serverMinutes || 0)) - Math.max(0, b.minutes - (b.serverMinutes || 0)) ||
+				// badges of one pool share progress, the one with the fewest days left is earned next
+				(a.days ?? 1) - (a.daily?.completedDays ?? 0) - ((b.days ?? 1) - (b.daily?.completedDays ?? 0)) ||
 				a.endAt - b.endAt ||
 				a.key.localeCompare(b.key)
 		),

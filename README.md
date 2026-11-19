@@ -71,7 +71,7 @@ Keep your existing `config.json` in the same folder as the new executable, or co
 
 You can reuse this file after an update without generating a new token, as long as the token is still valid.
 
-Also keep `config.json.state.json`, which stores the program's saved collection state.
+You can also keep `config.json.state.json`, which stores pauses and daily progress between launches. It is optional: without it the program rebuilds everything from Twitch.
 
 If Twitch later rejects your authorization, run `--gen-token` again and sign in with the same account.
 
@@ -157,7 +157,7 @@ Run only one instance per Twitch account and avoid watching other streams on tha
 1. Checks [StreamDatabase](https://streamdatabase.com) for badges currently awarded for watching and skips badges you already own.
 2. Picks a badge, giving priority to rewards you have already started.
 3. Finds an eligible stream and watches it. If the stream drops or progress stops, it switches to another channel.
-4. Tracks progress through Twitch, claims ready Drops and checks whether the badge has been added to your account.
+4. Tracks progress through Twitch and checks whether the badge has been added to your account.
 
 A badge is marked as collected only after Twitch confirms that you own it.
 
@@ -176,7 +176,7 @@ Keep the program running so it comes back for later windows, or restart it to co
 - Only badges awarded for watching are collected. Badges for subscriptions, purchases, Bits, attending TwitchCon and random rewards are skipped.
 - Paid evolutions are collected only if your account already has the badge from the previous stage.
 - Each run works with one account and watches one stream at a time.
-- Badge conditions come from StreamDatabase, where users fill them in. If it lists the wrong number of minutes, the program will not find the matching reward on Twitch.
+- Badge conditions come from StreamDatabase, where users fill them in. If it lists the wrong number of minutes, the program uses Twitch's number once the reward is clearly identified. If the category, channels or number of days are wrong, the matching reward will not be found.
 
 ## Troubleshooting
 

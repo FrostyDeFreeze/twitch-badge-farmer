@@ -5,11 +5,18 @@ import { generateToken } from './gen-token.ts'
 import { buildTasks, describeSkipped } from './catalog.ts'
 import { fetchJson } from './fetch.ts'
 import { Twitch } from './twitch.ts'
-import { Collector } from './collector.ts'
+import { Collector, nextWindowAt } from './collector.ts'
 import { loadState, saveState } from './state.ts'
 import { createLogger } from './logger.ts'
+import type { Task } from './types.ts'
 
 let log = createLogger()
+
+function nextWindow(task: Task, now: number) {
+	const at = nextWindowAt(task, now)
+
+	return at === null ? '' : new Date(at).toISOString()
+}
 
 function argumentsFor(args: string[]) {
 	let mode = 'start'
@@ -86,7 +93,8 @@ async function main() {
 			twitch.inventory()
 		])
 
-		const { tasks, skipped } = buildTasks(catalog, owned, Date.now(), globals, campaigns)
+		const now = Date.now()
+		const { tasks, skipped } = buildTasks(catalog, owned, now, globals, campaigns)
 
 		console.table(
 			tasks.map(task => ({
@@ -95,7 +103,7 @@ async function main() {
 				progress: task.daily
 					? task.daily.completedDays + '/' + task.daily.requiredDays + ' days, ' + task.serverMinutes + '/' + task.minutes + ' min today'
 					: '',
-				nextWindowUTC: task.daily?.nextEligibleAt ? new Date(task.daily.nextEligibleAt).toISOString() : '',
+				nextWindowUTC: nextWindow(task, now),
 				categories: (task.categoryNames[0] || 'Any') + (task.categoryNames.length > 1 ? ' + ' + (task.categoryNames.length - 1) : ''),
 				channels: task.channels.map(channel => channel.login).join(', ') || 'Any eligible channel'
 			}))

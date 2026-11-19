@@ -10,7 +10,6 @@ interface GqlData {
 	Inventory: { currentUser?: { inventory?: { dropCampaignsInProgress?: Campaign[] | null } } | null }
 	DropsHighlightService_AvailableDrops: { channel?: { viewerDropCampaigns?: Campaign[] | null } | null }
 	PlaybackAccessToken: { streamPlaybackAccessToken?: { signature?: string; value?: string } | null }
-	DropsPage_ClaimDropRewards: { claimDropRewards?: { status?: string } | null }
 }
 
 interface GqlResponse<T> {
@@ -31,7 +30,7 @@ interface StreamOptions {
 }
 
 import { fetchResponse, fetchJson, fetchText } from './fetch.ts'
-import { matchesDrop } from './catalog.ts'
+import { dropCandidates, matchesDrop, SPECIAL_EVENTS } from './catalog.ts'
 import { dailyProgress, matchesReward } from './rewards.ts'
 import { createLogger, type Logger } from './logger.ts'
 
@@ -40,15 +39,17 @@ const USER_AGENT =
 const QUERIES: Partial<Record<keyof GqlData, string>> = {
 	PlaybackAccessToken: 'ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9',
 	Inventory: '3ab317a5753b25125f47d4ce962ebe928ff4e85047b77508340c94ebc20b6230',
-	DropsHighlightService_AvailableDrops: '782dad0f032942260171d2d80a654f88bdd0c5a9dddc392e9bc92218a0f42d20',
-	DropsPage_ClaimDropRewards: 'a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930'
+	DropsHighlightService_AvailableDrops: '782dad0f032942260171d2d80a654f88bdd0c5a9dddc392e9bc92218a0f42d20'
 }
+
+// channel reward groups are shared by every badge searched in one selection pass
+const CHANNEL_REWARDS_TTL = 300_000
 
 const REWARD_FIELDS = `id track lane
  progressCriteria { requirementType requirements { minutesWatched subs turboSubs }
   repeatableConfig { repeatableTimes resetIntervalSeconds shouldCompleteAllRepeatsToEarn } }
  self { status currentMinutesWatched grantCount nextEligibleAt currentWindow { startedAt expiresAt } hasPreconditionsMet earnedReward { id } }
- rewards { distributionType dropDetail { badge { setID version } } pool { rewards { id } } }`
+ rewards { distributionType dropDetail { badge { setID version } } pool { rewards { distributionType dropDetail { badge { setID version } } } } }`
 
 function cdnUrl(value: string, base: string | URL) {
 	const url = new URL(value, base)
@@ -128,6 +129,7 @@ export class Twitch {
 	signal: AbortSignal | undefined
 	playback: { id: string; url: string } | null
 	selectedTracks = new Map<string, string>()
+	channelRewards = new Map<string, { expiresAt: number; campaigns: Campaign[] | null }>()
 	log: Logger
 
 	constructor(config: Config, signal?: AbortSignal, log = createLogger({ token: config.token })) {
@@ -268,18 +270,9 @@ export class Twitch {
 			if (exclude.has(stream.user_id)) continue
 
 			if (task.days) {
-				const data = await this.gql(
-					'DropChannelCampaignsProgress',
-					{ channelID: stream.user_id },
-					`query DropChannelCampaignsProgress($channelID: ID!) {
-      channelDropCampaignsProgress(channelID: $channelID) { id startAt endAt rewardGroups { ${REWARD_FIELDS} } }
-     }`
-				)
-
-				const campaigns = data.channelDropCampaignsProgress
+				const campaigns = await this.channelCampaigns(stream.user_id)
 
 				if (campaigns === null) continue
-				if (!Array.isArray(campaigns)) throw new Error('Twitch: daily channel rewards unavailable')
 
 				const matches = campaigns.flatMap(campaign =>
 					(campaign.rewardGroups ?? [])
@@ -309,21 +302,45 @@ export class Twitch {
 			if (data.channel === null || campaigns === null) continue
 			if (!Array.isArray(campaigns)) throw new Error('Twitch Drops: campaign list unavailable for ' + stream.user_login)
 
-			for (const campaign of campaigns) {
-				if (campaign.game && campaign.game.id !== stream.game_id) continue
-				if (expectedDrop && campaign.id !== expectedDrop.campaignId) continue
+			const matches = campaigns.flatMap(campaign =>
+				(campaign.game && campaign.game.id !== stream.game_id && !SPECIAL_EVENTS.includes(campaign.game.id)) ||
+				(expectedDrop && campaign.id !== expectedDrop.campaignId)
+					? []
+					: (campaign.timeBasedDrops ?? [])
+							.filter(drop => (!expectedDrop || drop.id === expectedDrop.id) && matchesDrop(task, campaign, drop))
+							.map(drop => ({ campaign, drop }))
+			)
+			const [match] = dropCandidates(task, matches)
 
-				const drop = campaign.timeBasedDrops?.find(
-					drop => (!expectedDrop || drop.id === expectedDrop.id) && matchesDrop(task, campaign, drop)
-				)
-
-				if (drop) {
-					return { ...stream, drop: { id: drop.id, campaignId: campaign.id } }
-				}
-			}
+			if (match) return { ...stream, drop: { id: match.drop.id, campaignId: match.campaign.id } }
 		}
 
 		return null
+	}
+
+	async channelCampaigns(channelID: string) {
+		const now = Date.now()
+		const cached = this.channelRewards.get(channelID)
+
+		if (cached && cached.expiresAt > now) return cached.campaigns
+
+		const data = await this.gql(
+			'DropChannelCampaignsProgress',
+			{ channelID },
+			`query DropChannelCampaignsProgress($channelID: ID!) {
+      channelDropCampaignsProgress(channelID: $channelID) { id startAt endAt rewardGroups { ${REWARD_FIELDS} } }
+     }`
+		)
+
+		const campaigns = data.channelDropCampaignsProgress
+
+		if (campaigns !== null && !Array.isArray(campaigns)) throw new Error('Twitch: daily channel rewards unavailable')
+
+		for (const [id, entry] of this.channelRewards) if (entry.expiresAt <= now) this.channelRewards.delete(id)
+
+		this.channelRewards.set(channelID, { expiresAt: now + CHANNEL_REWARDS_TTL, campaigns: campaigns ?? null })
+
+		return campaigns ?? null
 	}
 
 	async selectTrack(group: RewardGroup) {
@@ -422,23 +439,15 @@ export class Twitch {
 		return [...(campaigns ?? []), ...daily]
 	}
 
-	async dropProgress(drop: DropReference, campaigns?: Campaign[], now = Date.now()): Promise<DropProgress | null> {
+	async dropProgress(drop: DropReference, key: string, campaigns?: Campaign[], now = Date.now()): Promise<DropProgress | null> {
 		campaigns ??= await this.inventory()
 
 		if (drop.kind === 'reward-group') {
-			const campaign = campaigns.find(campaign => campaign.id === drop.campaignId && campaign.rewardGroups)
-			const group = campaign?.rewardGroups?.find(group => group.id === drop.id)
+			const group = campaigns
+				.find(campaign => campaign.id === drop.campaignId && campaign.rewardGroups)
+				?.rewardGroups?.find(group => group.id === drop.id)
 
-			if (!campaign || !group) return null
-
-			const progress = dailyProgress(group, now)
-
-			if (progress?.daily?.status === 'CLAIMABLE' && progress.daily.completedDays >= progress.daily.requiredDays && !progress.isClaimed) {
-				// viewer reward groups use the web client's account/campaign/group instance format
-				progress.dropInstanceID = this.config.id + '#' + campaign.id + '#' + group.id
-			}
-
-			return progress
+			return group ? dailyProgress(group, key, now) : null
 		}
 
 		const campaign = campaigns.find(campaign => campaign.id === drop.campaignId && campaign.timeBasedDrops)
@@ -451,14 +460,6 @@ export class Twitch {
 		}
 
 		return { ...item.self, requiredMinutesWatched: item.requiredMinutesWatched }
-	}
-
-	async claimDrop(dropInstanceID: string) {
-		const data = await this.gql('DropsPage_ClaimDropRewards', { input: { dropInstanceID } })
-
-		if (!['ELIGIBLE_FOR_ALL', 'DROP_INSTANCE_ALREADY_CLAIMED'].includes(data.claimDropRewards?.status || '')) {
-			throw new Error('Twitch: Drop claim not accepted')
-		}
 	}
 
 	async watch(stream: SelectedStream) {

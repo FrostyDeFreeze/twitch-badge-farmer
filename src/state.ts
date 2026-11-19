@@ -1,66 +1,48 @@
-import type { CollectorState } from './types.ts'
+import type { Attempt, CollectorState } from './types.ts'
 import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 
+const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0
+const text = (value: unknown) => typeof value === 'string'
+const optional = (value: unknown, check: (value: unknown) => boolean) => value === undefined || check(value)
+
+function valid(input: unknown, id: string): input is CollectorState {
+	const state = input as Partial<CollectorState> | null
+
+	return (
+		state?.version === 2 &&
+		state.id === id &&
+		(state.active === null || text(state.active)) &&
+		!!state.attempts &&
+		typeof state.attempts === 'object' &&
+		!Array.isArray(state.attempts) &&
+		Object.values(state.attempts as Record<string, Partial<Attempt> | null>).every(
+			attempt =>
+				!!attempt &&
+				count(attempt.attemptedMs) &&
+				count(attempt.deferUntil) &&
+				text(attempt.status) &&
+				optional(attempt.signature, text) &&
+				optional(attempt.dailyWindow, text) &&
+				optional(attempt.dailyCompletedWindow, text) &&
+				optional(attempt.dailyCompletedDays, value => Number.isSafeInteger(value) && count(value)) &&
+				optional(attempt.completedAt, count)
+		)
+	)
+}
+
 export async function loadState(path: string, id: string): Promise<CollectorState> {
-	let text
-
-	try {
-		text = await readFile(path, 'utf8')
-	} catch (error) {
-		if (!(error instanceof Error)) throw error
-
-		if (error.code === 'ENOENT') {
-			return { version: 1, id, confirmed: [], attempts: {}, active: null }
-		}
-
-		throw new Error('Could not read state: ' + error.code)
-	}
-
 	let state: unknown
 
 	try {
-		state = JSON.parse(text.replace(/^\uFEFF/, ''))
-	} catch {
-		throw new Error('Invalid state JSON, original file preserved')
+		state = JSON.parse((await readFile(path, 'utf8')).replace(/^\uFEFF/, ''))
+	} catch (error) {
+		if (error instanceof Error && !(error instanceof SyntaxError) && error.code !== 'ENOENT')
+			throw new Error('Could not read state: ' + error.code)
 	}
 
-	if (
-		!state ||
-		typeof state !== 'object' ||
-		!('version' in state) ||
-		state.version !== 1 ||
-		!('id' in state) ||
-		state.id !== id ||
-		!('confirmed' in state) ||
-		!Array.isArray(state.confirmed) ||
-		!('attempts' in state) ||
-		!state.attempts ||
-		typeof state.attempts !== 'object' ||
-		Array.isArray(state.attempts)
-	) {
-		throw new Error('State belongs to another account or has an unsupported format')
-	}
-
-	for (const attempt of Object.values(state.attempts)) {
-		if (
-			!attempt ||
-			typeof attempt !== 'object' ||
-			('dailyWindow' in attempt && typeof attempt.dailyWindow !== 'string') ||
-			('dailyCompletedWindow' in attempt && typeof attempt.dailyCompletedWindow !== 'string') ||
-			('dailyCompletedDays' in attempt &&
-				(typeof attempt.dailyCompletedDays !== 'number' ||
-					!Number.isSafeInteger(attempt.dailyCompletedDays) ||
-					attempt.dailyCompletedDays < 0)) ||
-			('claimedInstance' in attempt && typeof attempt.claimedInstance !== 'string') ||
-			('claimPendingAt' in attempt &&
-				(typeof attempt.claimPendingAt !== 'number' || !Number.isFinite(attempt.claimPendingAt) || attempt.claimPendingAt < 0))
-		) {
-			throw new Error('Invalid daily resume state, original file preserved')
-		}
-	}
-
-	return state as CollectorState
+	// state only spares repeated work, so a missing, old, foreign or damaged file starts over
+	return valid(state, id) ? state : { version: 2, id, active: null, attempts: {} }
 }
 
 export async function saveState(path: string, state: CollectorState) {
